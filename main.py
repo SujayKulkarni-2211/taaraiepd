@@ -13,6 +13,10 @@ from components.rollback_manager import RollbackManager
 from components.monitor_agent import MonitorAgent
 from components.dashboard import render_comprehensive_dashboard
 
+# ML Agent System
+from components.ml_agent_system import MLAgentSystem
+from components.ml_agent_panel import render_ml_agent_panel
+
 # Initialize session state
 if "api_keys" not in st.session_state:
     st.session_state.api_keys = {}
@@ -34,6 +38,10 @@ if "monitor_agent" not in st.session_state:
     st.session_state.monitor_agent = None
 if "monitor_data" not in st.session_state:
     st.session_state.monitor_data = None
+
+# ML Agent System
+if "ml_agent_system" not in st.session_state:
+    st.session_state.ml_agent_system = None
 
 def setup_screen():
     """Initial setup screen for API keys and SSH credentials."""
@@ -89,6 +97,9 @@ def setup_screen():
                     # Initialize monitor agent
                     st.session_state.monitor_agent = MonitorAgent(ssh_mgr)
 
+                    # Initialize ML Agent System
+                    st.session_state.ml_agent_system = MLAgentSystem(ssh_mgr, st.session_state.llm_service)
+
                     # Initialize server state
                     st.session_state.servers = [{
                         "id": "srv1",
@@ -136,7 +147,7 @@ def main_app():
     # Navigation sidebar
     view = st.sidebar.radio(
         "Navigation",
-        ["Dashboard", "DevOps Actions", "Security Actions", "AI Chat", "Agent", "Actions Log"],
+        ["Dashboard", "DevOps Actions", "Security Actions", "AI Chat", "Agent", "ML Agent 🤖", "Actions Log"],
         key="nav"
     )
     
@@ -182,7 +193,15 @@ def main_app():
                 st.rerun()
     
     # Main content
-    render_main_layout(view, st.session_state.servers[0] if st.session_state.servers else None)
+    if view == "ML Agent 🤖":
+        # Render ML Agent Panel
+        if st.session_state.ml_agent_system:
+            render_ml_agent_panel(st.session_state.ml_agent_system)
+        else:
+            st.error("ML Agent System not initialized")
+    else:
+        # Render existing views
+        render_main_layout(view, st.session_state.servers[0] if st.session_state.servers else None)
 
 # Main flow
 if not st.session_state.connected:
