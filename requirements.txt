@@ -1,18 +1,37 @@
-streamlit==1.41.0
-paramiko==3.4.1
-numpy>=1.26.0
-cryptography==42.0.0
-google-generativeai==0.7.0
-google-genai
-markdown>=3.0
-typing-extensions>=4.0.0
+# TAARA Security Analyzer - Dependencies
+# Prevent Crash, Preserve Cash
 
-# ML Dependencies
+# Core Framework
+streamlit>=1.41.0
+python-dotenv>=1.0.0
+
+# SSH & Remote Access
+paramiko>=3.4.0
+cryptography>=42.0.0
+
+# Numerical & ML
+numpy>=1.26.0
 torch>=2.0.0
 scikit-learn>=1.3.0
 scipy>=1.11.0
 
-# Agent Framework (Optional - not strictly needed for current impl)
-# langgraph>=0.0.20
-# langchain>=0.1.0
-# langchain-google-genai>=0.0.6
+# Quantum Computing (Simulation)
+pennylane>=0.38.0
+
+# LLM Integration
+google-generativeai>=0.7.0
+google-genai
+
+# PDF Report Generation
+reportlab>=4.0.0
+
+# Cloud Platform SDKs (install as needed for target platforms)
+# pip install boto3              # AWS
+# pip install google-cloud-compute google-cloud-storage google-cloud-resource-manager google-cloud-billing  # GCP
+# pip install azure-identity azure-mgmt-compute azure-mgmt-network azure-mgmt-storage azure-mgmt-costmanagement azure-mgmt-resource  # Azure
+# pip install docker             # Docker
+# pip install kubernetes         # Kubernetes
+
+# Utilities
+markdown>=3.0
+typing-extensions>=4.0.0

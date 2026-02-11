@@ -1,0 +1,15 @@
+{
+  "baseline_collected": true,
+  "embedder_trained": true,
+  "anomaly_detector_trained": true,
+  "baseline_samples": 10,
+  "last_training_time": 1770801909.0809479,
+  "training_history": [
+    {
+      "timestamp": 1770801909.080951,
+      "samples": 10,
+      "autoencoder_loss": 0.035352449864149094,
+      "detector_contamination": 0.1
+    }
+  ]
+}

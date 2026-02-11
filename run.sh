@@ -1,7 +1,7 @@
 #!/bin/bash
 
 echo "========================================"
-echo "   TAARA - DevSecOps Control Plane"
+echo "   TAARA q.0
 echo "========================================"
 echo ""
 echo "Starting Taara application..."
