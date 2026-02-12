@@ -964,4 +964,4 @@ We thank the SecRepo project for providing open authentication log data, and ack
 
 *TAARA: Trajectory-Aware Adaptive Residual Analysis — Prevent Crash, Preserve Cash*
 
-*Sujay Kaparthi | RV University, Bangalore | 2026*
+*Sujay V Kulkarni | RV University, Bangalore | 2026*
