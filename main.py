@@ -372,50 +372,14 @@ def render_main_app():
     from components.platform_manager import PLATFORM_ICONS
 
     with st.sidebar:
-        st.markdown("""
-        <div style="text-align: center; padding: 15px 0; border-bottom: 1px solid #222;">
-            <h2 style="color: #e94560; margin: 0; letter-spacing: 3px;">TAARA</h2>
-            <p style="color: #666; margin: 0; font-size: 0.8em;">Prevent Crash, Preserve Cash</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if platform and ptype:
-            st.markdown(f"""
-            <div style="padding: 10px 0; border-bottom: 1px solid #222;">
-                <p style="color: #888; margin: 0; font-size: 0.85em;">
-                    {PLATFORM_ICONS.get(ptype, '')} {ptype.upper()} |
-                    {'🟢 Connected' if platform.connected else '🔴 Disconnected'}
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown("")
-
         if st.session_state.nav_target:
             st.session_state.active_nav = st.session_state.nav_target
             st.session_state.nav_target = None
 
-        # System sub-nav only shown when on System tab
-        if st.session_state.get('top_tab') == 'system':
-            system_nav = [
-                ('taara_analysis',    '🔍 TaaraAnalysis'),
-                ('taaraware',         '🛡️ TaaraWare Deploy'),
-                ('taaraware_actions', '⚡ TaaraWare Actions'),
-                ('command_center',    '📡 Command Center'),
-                ('training',          '🎓 Training'),
-                ('agent',             '🤖 Agent'),
-                ('ai_chat',           '💬 AI Chat'),
-                ('action_log',        '📋 Action Log'),
-                ('unified_dashboard', '📊 Unified Dashboard'),
-            ]
-            for key, label in system_nav:
-                is_active = st.session_state.active_nav == key
-                if st.button(label, key=f"nav_{key}", use_container_width=True,
-                             type="primary" if is_active else "secondary"):
-                    st.session_state.active_nav = key
-                    st.rerun()
+        if platform and ptype:
+            st.caption(f"{PLATFORM_ICONS.get(ptype, '')} {ptype.upper()} — {'🟢 Connected' if platform.connected else '🔴 Disconnected'}")
+            st.markdown("---")
 
-        st.markdown("---")
         if st.button("🔌 Change Platform", use_container_width=True):
             if platform:
                 platform.disconnect()
@@ -1008,105 +972,128 @@ def _render_ssh_state2(platform):
 
     # ── Tab 3: Agent & Actions ──────────────────────────────────────────────
     with tab_actions:
-        st.markdown("### Pending Actions")
+        from components.action_log import _generate_rollback_command
+        import re as _re
+        from datetime import datetime as _dt
+
+        if 'executed_commands' not in st.session_state:
+            st.session_state.executed_commands = []
+
+        def _record_and_show(code, stdout, stderr, rc, source='manual', description=''):
+            success = (rc == 0)
+            entry = {
+                'code': code, 'language': 'bash', 'source': source,
+                'time': _dt.now().strftime('%H:%M:%S'),
+                'status': 'success' if success else 'failed',
+                'result': {'success': success, 'stdout': stdout, 'stderr': stderr,
+                           'exit_code': rc},
+            }
+            st.session_state.executed_commands.append(entry)
+            if success:
+                st.success(f"✅ Executed: `{code[:80]}`")
+                if stdout.strip():
+                    st.code(stdout[:3000], language='text')
+                else:
+                    st.caption("(command completed with no output)")
+            else:
+                st.error(f"❌ Failed (rc={rc}): `{code[:80]}`")
+                if stderr.strip():
+                    st.code(stderr[:2000], language='text')
+
+        # ── Pending agent proposals ────────────────────────────────────────
+        st.markdown("### Pending Agent Actions")
         proposed = security_agent.proposed_actions
         if proposed:
             for i, action in enumerate(proposed):
-                with st.expander(f"[{action.get('time','?')}] {action.get('explanation','Action')[:80]}"):
-                    st.code(action.get('code', ''), language=action.get('language', 'bash'))
-                    st.caption(f"Source: {action.get('source','agent')} | "
-                               f"Severity: {action.get('severity','?')}")
-                    col_a, col_e, col_d = st.columns(3)
+                with st.expander(
+                    f"[{action.get('time','?')}] {action.get('explanation','Action')[:80]}",
+                    expanded=True
+                ):
+                    edited_code = st.text_area(
+                        "Command (edit before approving)",
+                        value=action.get('code', ''),
+                        key=f"edit_action_{i}"
+                    )
+                    action['code'] = edited_code
+                    st.caption(f"Source: {action.get('source','agent')} | Severity: {action.get('severity','?')}")
+                    col_a, col_d = st.columns(2)
                     with col_a:
-                        if st.button("✅ Approve", key=f"approve_action_{i}", type="primary"):
-                            result = security_agent.execute_approved_action(i, platform)
-                            if result['success']:
-                                action_logger.log('agent', 'action_approved',
-                                                  action.get('code','')[:200],
+                        if st.button("✅ Approve & Execute", key=f"approve_action_{i}", type="primary"):
+                            with st.spinner("Executing..."):
+                                result = security_agent.execute_approved_action(i, platform)
+                                stdout = result.get('stdout', result.get('output', ''))
+                                stderr = result.get('stderr', '')
+                                rc = result.get('rc', result.get('return_code', 0 if result.get('success') else 1))
+                                rollback = _generate_rollback_command(edited_code)
+                                action_logger.log('agent', 'action_approved', edited_code[:200],
                                                   severity='info',
-                                                  metadata={'command': action.get('code',''),
-                                                            'rollback_cmd': action.get('rollback_cmd','')})
-                                st.success("Executed.")
-                            else:
-                                st.error(f"Failed: {result.get('error','')}")
+                                                  metadata={'command': edited_code,
+                                                            'rollback_cmd': rollback,
+                                                            'stdout': stdout[:500], 'rc': rc})
+                            _record_and_show(edited_code, stdout, stderr, rc, source='agent')
                             st.rerun()
-                    with col_e:
-                        new_cmd = st.text_input("Edit command", value=action.get('code',''),
-                                                key=f"edit_action_{i}")
-                        if new_cmd != action.get('code',''):
-                            action['code'] = new_cmd
                     with col_d:
                         if st.button("❌ Disapprove", key=f"disapprove_action_{i}"):
                             security_agent.proposed_actions.pop(i)
                             st.rerun()
         else:
-            st.info("No pending actions. Run autonomous analysis from Agent Panel to generate proposals.")
+            st.info("No pending actions. Run autonomous analysis from the Agent Panel tab to generate proposals.")
 
         st.markdown("---")
-        st.markdown("### Manual Action")
-        manual_cmd = st.text_area("Enter command directly", key="s2_manual_cmd",
-                                   placeholder="e.g. ufw allow 443/tcp")
-        if st.button("Execute Manual Command", key="s2_exec_manual",
+
+        # ── Manual Action ──────────────────────────────────────────────────
+        st.markdown("### Manual Command")
+        manual_cmd = st.text_area("Command", key="s2_manual_cmd",
+                                   placeholder="e.g. ss -tlnp")
+        if st.button("▶ Execute", type="primary", key="s2_exec_manual",
                      disabled=not manual_cmd.strip()):
             with st.spinner("Executing..."):
                 out, err, rc = platform.execute_command(manual_cmd.strip())
-                from components.action_log import _generate_rollback_command
                 rollback = _generate_rollback_command(manual_cmd.strip())
                 action_logger.log('manual', 'manual_command', manual_cmd.strip(),
                                   severity='warning',
                                   metadata={'command': manual_cmd.strip(),
                                             'rollback_cmd': rollback,
                                             'stdout': out[:500], 'rc': rc})
-            if rc == 0:
-                st.success("Command executed.")
-                if out.strip():
-                    st.code(out[:1000], language='text')
-            else:
-                st.error(f"Command failed (rc={rc}).")
-                if err.strip():
-                    st.code(err[:500], language='text')
+            _record_and_show(manual_cmd.strip(), out, err, rc, source='manual')
 
         st.markdown("---")
-        st.markdown("### AI-Assisted Action")
-        ai_desc = st.text_area("Describe what you want to do in plain English",
+
+        # ── AI-Assisted Action ─────────────────────────────────────────────
+        st.markdown("### AI-Assisted Command")
+        ai_desc = st.text_area("Describe what you want in plain English",
                                 key="s2_ai_action_desc",
                                 placeholder="e.g. Disable root SSH login and restart the SSH service")
-        if st.button("Generate Command with AI", key="s2_ai_gen",
+        if st.button("Generate with AI", key="s2_ai_gen",
                      disabled=not (ai_desc.strip() and llm_service)):
-            if not llm_service:
-                st.warning("No Gemini API key set — add it at login.")
+            with st.spinner("Asking AI..."):
+                prompt = (f"Generate a single bash command or short script to: {ai_desc.strip()}\n"
+                          f"Server OS: Linux. Return ONLY the command in a ```bash block. "
+                          f"Include a one-line comment explaining what it does.")
+                resp = llm_service.generate_response(prompt)
+            commands = resp.get('commands', []) if resp.get('success') else []
+            if commands:
+                st.session_state['_ai_generated_cmd'] = commands[0]
             else:
-                with st.spinner("Asking AI..."):
-                    prompt = (f"Generate a single bash command or short script to: {ai_desc.strip()}\n"
-                              f"Server OS: Linux. Return ONLY the command in a ```bash block. "
-                              f"Include a one-line comment explaining what it does.")
-                    resp = llm_service.generate_response(prompt)
-                commands = resp.get('commands', []) if resp.get('success') else []
-                if commands:
-                    cmd = commands[0]
-                    st.session_state['_ai_generated_cmd'] = cmd
+                text = resp.get('explanation', resp.get('text', ''))
+                m = _re.search(r'```(?:bash)?\n(.*?)```', text, _re.DOTALL)
+                if m:
+                    st.session_state['_ai_generated_cmd'] = {'code': m.group(1).strip(),
+                                                               'language': 'bash',
+                                                               'explanation': ai_desc}
                 else:
-                    text = resp.get('explanation', resp.get('text', ''))
-                    import re
-                    m = re.search(r'```(?:bash)?\n(.*?)```', text, re.DOTALL)
-                    if m:
-                        st.session_state['_ai_generated_cmd'] = {'code': m.group(1).strip(),
-                                                                   'language': 'bash',
-                                                                   'explanation': ai_desc}
-                    else:
-                        st.warning("AI did not return a command. Try rephrasing.")
+                    st.warning("AI did not return a parseable command. Try rephrasing.")
 
         ai_cmd = st.session_state.get('_ai_generated_cmd')
         if ai_cmd:
-            st.markdown("**Generated command — review before executing:**")
-            edited = st.text_area("Edit if needed", value=ai_cmd.get('code', ''),
+            st.markdown("**Generated — edit if needed, then approve:**")
+            edited = st.text_area("Edit command", value=ai_cmd.get('code', ''),
                                    key="s2_ai_cmd_edit")
             col_app, col_dis = st.columns(2)
             with col_app:
                 if st.button("✅ Approve & Execute", type="primary", key="s2_ai_approve"):
                     with st.spinner("Executing..."):
                         out, err, rc = platform.execute_command(edited.strip())
-                        from components.action_log import _generate_rollback_command
                         rollback = _generate_rollback_command(edited.strip())
                         action_logger.log('ai_action', 'ai_assisted_command', edited.strip(),
                                           severity='warning',
@@ -1115,17 +1102,41 @@ def _render_ssh_state2(platform):
                                                     'description': ai_desc,
                                                     'stdout': out[:500], 'rc': rc})
                     del st.session_state['_ai_generated_cmd']
-                    if rc == 0:
-                        st.success("Executed.")
-                        if out.strip():
-                            st.code(out[:1000], language='text')
-                    else:
-                        st.error(f"Failed (rc={rc}): {err[:300]}")
+                    _record_and_show(edited.strip(), out, err, rc, source='ai_action',
+                                     description=ai_desc)
                     st.rerun()
             with col_dis:
                 if st.button("❌ Disapprove", key="s2_ai_disapprove"):
                     del st.session_state['_ai_generated_cmd']
                     st.rerun()
+
+        # ── Execution history (shared with AI Chat) ────────────────────────
+        executed = st.session_state.get('executed_commands', [])
+        if executed:
+            st.markdown("---")
+            st.markdown(f"### Execution History ({len(executed)} commands)")
+            for idx, ec in enumerate(reversed(executed[-20:])):
+                status = ec.get('status', 'unknown')
+                icon = '✅' if status == 'success' else ('❌' if status == 'failed' else '🚫')
+                with st.expander(
+                    f"{icon} [{ec.get('time','')}] [{ec.get('source','')}] {ec['code'][:70]}",
+                    expanded=(idx == 0)
+                ):
+                    st.code(ec['code'], language='bash')
+                    res = ec.get('result', {})
+                    if res.get('stdout', '').strip():
+                        st.markdown("**Output:**")
+                        st.code(res['stdout'][:3000], language='text')
+                    if res.get('stderr', '').strip():
+                        st.markdown("**Stderr:**")
+                        st.code(res['stderr'][:1000], language='text')
+                    if status == 'success':
+                        st.success("Completed successfully")
+                    elif status == 'failed':
+                        st.error(f"Exit code: {res.get('exit_code', '?')}")
+            if st.button("Clear execution history", key="s2_clear_exec_hist"):
+                st.session_state.executed_commands = []
+                st.rerun()
 
     # ── Tab 4: Agent Panel ──────────────────────────────────────────────────
     with tab_agent:
@@ -1247,34 +1258,53 @@ def _render_ssh_state2(platform):
 
     # ── Tab 6: Custom Actions ───────────────────────────────────────────────
     with tab_custom:
+        import re as _re2
+        from components.action_log import _generate_rollback_command as _grc
+        from datetime import datetime as _dt2
+
+        if 'executed_commands' not in st.session_state:
+            st.session_state.executed_commands = []
+
+        def _custom_record_and_show(code, stdout, stderr, rc, source='custom'):
+            success = (rc == 0)
+            st.session_state.executed_commands.append({
+                'code': code, 'language': 'bash', 'source': source,
+                'time': _dt2.now().strftime('%H:%M:%S'),
+                'status': 'success' if success else 'failed',
+                'result': {'success': success, 'stdout': stdout, 'stderr': stderr,
+                           'exit_code': rc},
+            })
+            if success:
+                st.success(f"✅ Done: `{code[:80]}`")
+                if stdout.strip():
+                    st.code(stdout[:3000], language='text')
+                else:
+                    st.caption("(completed with no output)")
+            else:
+                st.error(f"❌ Failed (rc={rc}): `{code[:80]}`")
+                if stderr.strip():
+                    st.code(stderr[:2000], language='text')
+
         st.markdown("### Custom Actions")
         mode = st.radio("Mode", ["Manual", "AI-Assisted"], key="s2_custom_mode", horizontal=True)
 
         if mode == "Manual":
             cmd_input = st.text_area("Command", key="s2_custom_manual",
                                       placeholder="Enter any bash command")
-            st.caption("Preview: command will execute on the connected server as the configured SSH user.")
-            if st.button("Execute", type="primary", key="s2_custom_exec_manual",
-                         disabled=not cmd_input.strip()):
-                confirm = st.checkbox("I confirm I want to run this command on the remote server",
-                                       key="s2_custom_confirm")
-                if confirm:
-                    with st.spinner("Executing..."):
-                        out, err, rc = platform.execute_command(cmd_input.strip())
-                        from components.action_log import _generate_rollback_command
-                        rollback = _generate_rollback_command(cmd_input.strip())
-                        action_logger.log('custom', 'custom_command', cmd_input.strip(),
-                                          severity='warning',
-                                          metadata={'command': cmd_input.strip(),
-                                                    'rollback_cmd': rollback})
-                    if rc == 0:
-                        st.success("Done.")
-                        if out.strip():
-                            st.code(out[:2000], language='text')
-                    else:
-                        st.error(f"Failed (rc={rc}).")
-                        if err.strip():
-                            st.code(err[:500], language='text')
+            st.caption("Executes on the connected server as the configured SSH user.")
+            confirm = st.checkbox("I confirm I want to run this on the remote server",
+                                   key="s2_custom_confirm")
+            if st.button("▶ Execute", type="primary", key="s2_custom_exec_manual",
+                         disabled=not (cmd_input.strip() and confirm)):
+                with st.spinner("Executing..."):
+                    out, err, rc = platform.execute_command(cmd_input.strip())
+                    rollback = _grc(cmd_input.strip())
+                    action_logger.log('custom', 'custom_command', cmd_input.strip(),
+                                      severity='warning',
+                                      metadata={'command': cmd_input.strip(),
+                                                'rollback_cmd': rollback,
+                                                'stdout': out[:500], 'rc': rc})
+                _custom_record_and_show(cmd_input.strip(), out, err, rc, source='custom_manual')
         else:
             desc = st.text_area("Describe what you want",
                                  key="s2_custom_ai_desc",
@@ -1289,10 +1319,11 @@ def _render_ssh_state2(platform):
                 if commands:
                     st.session_state['_custom_ai_cmd'] = commands[0].get('code', '')
                 else:
-                    import re
                     text = resp.get('explanation', resp.get('text', ''))
-                    m = re.search(r'```(?:bash)?\n(.*?)```', text, re.DOTALL)
+                    m = _re2.search(r'```(?:bash)?\n(.*?)```', text, _re2.DOTALL)
                     st.session_state['_custom_ai_cmd'] = m.group(1).strip() if m else ''
+                    if not st.session_state['_custom_ai_cmd']:
+                        st.warning("AI did not return a parseable command. Try rephrasing.")
 
             ai_cmd = st.session_state.get('_custom_ai_cmd', '')
             if ai_cmd:
@@ -1304,25 +1335,48 @@ def _render_ssh_state2(platform):
                                  key="s2_custom_ai_approve"):
                         with st.spinner("Executing..."):
                             out, err, rc = platform.execute_command(edited.strip())
-                            from components.action_log import _generate_rollback_command
-                            rollback = _generate_rollback_command(edited.strip())
+                            rollback = _grc(edited.strip())
                             action_logger.log('custom_ai', 'ai_custom_command', edited.strip(),
                                               severity='warning',
                                               metadata={'command': edited.strip(),
                                                         'rollback_cmd': rollback,
-                                                        'description': desc})
-                        st.session_state['_custom_ai_cmd'] = ''
-                        if rc == 0:
-                            st.success("Done.")
-                            if out.strip():
-                                st.code(out[:2000], language='text')
-                        else:
-                            st.error(f"Failed (rc={rc}): {err[:300]}")
+                                                        'description': desc,
+                                                        'stdout': out[:500], 'rc': rc})
+                        del st.session_state['_custom_ai_cmd']
+                        _custom_record_and_show(edited.strip(), out, err, rc, source='custom_ai')
                         st.rerun()
                 with col_d:
                     if st.button("❌ Disapprove", key="s2_custom_ai_dis"):
                         st.session_state['_custom_ai_cmd'] = ''
                         st.rerun()
+
+        # ── Execution history ──────────────────────────────────────────────
+        executed = st.session_state.get('executed_commands', [])
+        if executed:
+            st.markdown("---")
+            st.markdown(f"### Execution History ({len(executed)} commands)")
+            for idx, ec in enumerate(reversed(executed[-20:])):
+                status = ec.get('status', 'unknown')
+                icon = '✅' if status == 'success' else ('❌' if status == 'failed' else '🚫')
+                with st.expander(
+                    f"{icon} [{ec.get('time','')}] [{ec.get('source','')}] {ec['code'][:70]}",
+                    expanded=(idx == 0)
+                ):
+                    st.code(ec['code'], language='bash')
+                    res = ec.get('result', {})
+                    if res.get('stdout', '').strip():
+                        st.markdown("**Output:**")
+                        st.code(res['stdout'][:3000], language='text')
+                    if res.get('stderr', '').strip():
+                        st.markdown("**Stderr:**")
+                        st.code(res['stderr'][:1000], language='text')
+                    if status == 'success':
+                        st.success("Completed successfully")
+                    elif status == 'failed':
+                        st.error(f"Exit code: {res.get('exit_code', '?')}")
+            if st.button("Clear history", key="s2_custom_clear_hist"):
+                st.session_state.executed_commands = []
+                st.rerun()
 
     # ── Tab 7: Rollback Log ─────────────────────────────────────────────────
     with tab_rollback:

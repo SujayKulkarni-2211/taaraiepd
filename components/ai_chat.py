@@ -3,7 +3,7 @@ AI Chat Interface
 ==================
 
 AI-powered chat for security analysis with executable command support.
-Uses Gemini LLM with TAARA context awareness.
+Uses Groq LLM with TAARA context awareness.
 
 Features:
 - Security Q&A with TAARA context

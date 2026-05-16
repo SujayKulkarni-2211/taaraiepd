@@ -306,7 +306,7 @@ def _run_analysis(platform, taara_analyzer, cloud_analyzer, llm_service,
     progress.progress(80, text="Generating AI summary from verified findings...")
     if llm_service:
         try:
-            # Build verified findings JSON — Gemini receives ONLY what TAARA found.
+            # Build verified findings JSON — LLM receives ONLY what TAARA found.
             # It converts findings to plain language. It does NOT discover or invent issues.
             security_data = results.get('security_data', {})
             summary = security_data.get('summary', {})
@@ -721,8 +721,8 @@ def _display_results(results: Dict, ptype: str):
     # AI Summary
     # ═══════════════════════════════════════════════════════════
     if results.get('ai_summary'):
-        st.markdown("### Gemini Executive Summary")
-        st.caption("Generated from verified findings only — Gemini does not add or invent findings.")
+        st.markdown("### AI Executive Summary")
+        st.caption("Generated from verified findings only — AI does not add or invent findings.")
         st.info(results['ai_summary'])
 
     # ═══════════════════════════════════════════════════════════
@@ -1023,11 +1023,11 @@ def _render_security_details(security_data: Dict, kb_findings: list, kb_status: 
                 st.caption(f"Fix: {f.get('remediation','')}")
                 reasoning = _get_reasoning(f)
                 if reasoning:
-                    with st.expander("MITRE ATT&CK Reasoning", expanded=False):
-                        st.markdown(f"**Tactic:** {reasoning['mitre_tactic']}")
-                        st.markdown(f"**Technique:** {reasoning['mitre_technique']}")
-                        st.markdown(f"**Why it matters:** {reasoning['why_it_matters']}")
-                        st.markdown(f"**Recommended action:** `{reasoning['recommended_action']}`")
+                    st.markdown(
+                        f"<small style='color:#888'>⚔ MITRE: {reasoning['mitre_tactic']} · "
+                        f"{reasoning['mitre_technique']}</small>",
+                        unsafe_allow_html=True
+                    )
         else:
             info = cat_data.get('info', {})
             if info and isinstance(info, dict):
@@ -1056,11 +1056,11 @@ def _render_security_details(security_data: Dict, kb_findings: list, kb_status: 
                 st.success(f"Fix: {f['mitigations'][0].get('label','')} — {f['mitigations'][0].get('description','')}")
             reasoning = _get_reasoning(f)
             if reasoning:
-                with st.expander("MITRE ATT&CK Reasoning", expanded=False):
-                    st.markdown(f"**Tactic:** {reasoning['mitre_tactic']}")
-                    st.markdown(f"**Technique:** {reasoning['mitre_technique']}")
-                    st.markdown(f"**Why it matters:** {reasoning['why_it_matters']}")
-                    st.markdown(f"**Recommended action:** `{reasoning['recommended_action']}`")
+                st.markdown(
+                    f"<small style='color:#888'>⚔ MITRE: {reasoning['mitre_tactic']} · "
+                    f"{reasoning['mitre_technique']}</small>",
+                    unsafe_allow_html=True
+                )
             st.markdown("---")
 
 
