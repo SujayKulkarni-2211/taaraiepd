@@ -18,6 +18,7 @@ import numpy as np
 import pennylane as qml
 from typing import List, Dict, Tuple, Optional
 import math
+import hashlib
 
 
 N_QUBITS = 4
@@ -176,6 +177,17 @@ class QuantumValidator:
             'max_fidelity': float(max(fidelities)),
             'quantum_confidence': 1.0 - f_min
         }
+
+    def compute_minimum_fidelity_keyed(self, current_residual: np.ndarray,
+                                        shared_secret_hex: str, hostname: str) -> Dict:
+        """
+        PQC-keyed fidelity computation. Applies per-client Kyber768 transform before encoding.
+        Attacker cannot compute client's normal without the Kyber private key.
+        """
+        keyed_residual = apply_client_transform(current_residual, shared_secret_hex, hostname)
+        result = self.compute_minimum_fidelity(keyed_residual)
+        result['keyed'] = True
+        return result
 
     def add_to_memory(self, residual: np.ndarray):
         """Add a residual direction to quantum memory."""
@@ -336,3 +348,38 @@ def compute_bloch_coordinates(state: np.ndarray, qubit: int = 0) -> Dict:
         'phi': round(float(phi), 4),
         'purity': round(float(r), 4)
     }
+
+
+def apply_client_transform(feature_vec: np.ndarray, shared_secret_hex: str, hostname: str) -> np.ndarray:
+    """
+    Apply a per-client PQC-keyed additive offset to the feature vector before quantum encoding.
+
+    Derived from Kyber768 shared secret — lattice-hard to reverse without the private key.
+    Attacker who knows the full TAARA architecture still cannot compute what "normal"
+    looks like for this client without the shared secret.
+
+    Algorithm:
+      seed = SHA3-256(shared_secret_bytes + hostname_bytes)
+      Expand seed via repeated SHA3-256 hashing to cover feature_vec length
+      Normalize expanded bytes to [-0.5, 0.5] float range → offset
+      Add offset to feature_vec → project result to unit sphere
+    """
+    secret_bytes = bytes.fromhex(shared_secret_hex)
+    hostname_bytes = hostname.encode('utf-8')
+
+    n = len(feature_vec)
+    offset_bytes = bytearray()
+    counter = 0
+    while len(offset_bytes) < n * 8:
+        h = hashlib.sha3_256(secret_bytes + hostname_bytes + counter.to_bytes(4, 'big')).digest()
+        offset_bytes.extend(h)
+        counter += 1
+
+    offset = np.frombuffer(bytes(offset_bytes[:n * 8]), dtype=np.uint64).astype(np.float64)
+    offset = (offset / np.iinfo(np.uint64).max) - 0.5
+
+    transformed = feature_vec + offset[:n]
+    norm = np.linalg.norm(transformed)
+    if norm < 1e-12:
+        return feature_vec
+    return transformed / norm

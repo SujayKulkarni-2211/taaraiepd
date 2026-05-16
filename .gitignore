@@ -54,3 +54,10 @@ id_rsa*
 credentials.json
 secrets.json
 config.json
+
+# Large benchmark datasets (download with benchmark/datasets/download_datasets.sh)
+benchmark/datasets/*.log
+benchmark/datasets/*.tar.gz
+
+# Runtime model state
+models/taaraware_state.json

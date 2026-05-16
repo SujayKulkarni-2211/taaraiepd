@@ -1,0 +1,31 @@
+{
+  "benchmark": "Real-world vulnerable apps (OWASP NodeGoat + OWASP Juice Shop)",
+  "nodegoat_detection_rate": 1.0,
+  "juiceshop_detection_rate": 1.0,
+  "nodegoat_known_issues": {
+    "node:12 EOL": true,
+    "bcrypt-nodejs deprecated": true,
+    "marked XSS": true,
+    "swig unmaintained": true,
+    "floating action pin": true
+  },
+  "juiceshop_known_issues": {
+    "express-jwt alg:none bypass": true,
+    "jsonwebtoken alg:none bypass": true,
+    "curl-pipe-bash in CI": true,
+    "pull_request_target RCE": true,
+    "no lockfile": true
+  },
+  "nodegoat_summary": {
+    "layer1_findings": 9,
+    "layer3_chains": 0,
+    "critical": 3,
+    "high": 6
+  },
+  "juiceshop_summary": {
+    "layer1_findings": 11,
+    "layer3_chains": 0,
+    "critical": 4,
+    "high": 7
+  }
+}

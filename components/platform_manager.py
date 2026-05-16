@@ -131,6 +131,8 @@ class SSHPlatform(PlatformBase):
 
         findings['categories']['open_ports'] = self._scan_open_ports()
         findings['categories']['user_audit'] = self._audit_users()
+        findings['categories']['ssh_config'] = self._collect_ssh_config()
+        findings['categories']['firewall'] = self._collect_firewall()
         findings['categories']['auth_logs'] = self._check_auth_logs()
         findings['categories']['file_permissions'] = self._check_file_permissions()
         findings['categories']['running_processes'] = self._check_processes()
@@ -147,10 +149,143 @@ class SSHPlatform(PlatformBase):
 
         return findings
 
+    def get_raw_configs(self) -> Dict[str, str]:
+        """
+        Return raw configuration text for knowledge graph scanning.
+        Each value is the literal text content of a config file or command output
+        — not generated finding text. The knowledge scanner uses this directly.
+        """
+        if not self.connected:
+            return {}
+        raw = {}
+
+        sshd_config, _, _ = self.execute_command("cat /etc/ssh/sshd_config 2>/dev/null")
+        if sshd_config.strip():
+            raw["sshd_config"] = sshd_config
+
+        sshd_T, _, _ = self.execute_command("sshd -T 2>/dev/null")
+        if sshd_T.strip():
+            raw["sshd_effective"] = sshd_T
+
+        ss_out, _, _ = self.execute_command("ss -tulnp 2>/dev/null")
+        if ss_out.strip():
+            raw["open_ports"] = ss_out
+
+        ss_estab, _, _ = self.execute_command("ss -tunap 2>/dev/null | head -60")
+        if ss_estab.strip():
+            raw["connections"] = ss_estab
+
+        ufw_out, _, _ = self.execute_command("ufw status verbose 2>/dev/null")
+        if ufw_out.strip() and 'command not found' not in ufw_out.lower():
+            raw["ufw_status"] = ufw_out
+
+        iptables_out, _, _ = self.execute_command("iptables -S 2>/dev/null | head -50")
+        if iptables_out.strip() and 'command not found' not in iptables_out.lower():
+            raw["iptables"] = iptables_out
+        else:
+            nft_out, _, _ = self.execute_command("nft list ruleset 2>/dev/null | head -80")
+            if nft_out.strip() and 'command not found' not in nft_out.lower():
+                raw["nftables"] = nft_out
+
+        fail2ban_out, _, _ = self.execute_command("fail2ban-client status 2>/dev/null")
+        if fail2ban_out.strip() and 'command not found' not in fail2ban_out.lower():
+            raw["fail2ban"] = fail2ban_out
+
+        auth_tail, _, _ = self.execute_command(
+            "tail -200 /var/log/auth.log 2>/dev/null || tail -200 /var/log/secure 2>/dev/null"
+        )
+        if auth_tail.strip():
+            raw["auth_log_tail"] = auth_tail
+
+        return raw
+
+    def _collect_ssh_config(self) -> Dict:
+        """Collect sshd_config and effective settings for knowledge graph scanning."""
+        result = {'name': 'SSH Configuration', 'findings': [], 'raw_config': ''}
+
+        sshd_config, _, _ = self.execute_command("cat /etc/ssh/sshd_config 2>/dev/null")
+        sshd_T, _, _ = self.execute_command("sshd -T 2>/dev/null")
+        result['raw_config'] = (sshd_config + "\n\n# Effective settings (sshd -T):\n" + sshd_T).strip()
+
+        risky_settings = {
+            'PermitRootLogin yes': ('critical', 'Root login via SSH is permitted',
+                                    'Set PermitRootLogin no or prohibit-password'),
+            'PasswordAuthentication yes': ('high', 'Password authentication is enabled',
+                                           'Disable PasswordAuthentication and use key-based auth'),
+            'PermitEmptyPasswords yes': ('critical', 'Empty passwords are permitted',
+                                         'Set PermitEmptyPasswords no'),
+            'X11Forwarding yes': ('medium', 'X11 forwarding is enabled',
+                                  'Disable X11Forwarding unless specifically required'),
+            'Protocol 1': ('critical', 'SSH Protocol 1 is enabled',
+                           'Remove Protocol 1 — use Protocol 2 only'),
+        }
+
+        for setting, (severity, detail, remediation) in risky_settings.items():
+            if setting.lower() in sshd_config.lower() or setting.lower() in sshd_T.lower():
+                result['findings'].append({
+                    'title': f'Risky SSH setting: {setting}',
+                    'severity': severity, 'detail': detail, 'remediation': remediation
+                })
+
+        # Check MaxAuthTries
+        for line in (sshd_config + sshd_T).split('\n'):
+            if line.strip().lower().startswith('maxauthtries'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        val = int(parts[-1])
+                        if val > 6:
+                            result['findings'].append({
+                                'title': f'MaxAuthTries too high: {val}',
+                                'severity': 'medium',
+                                'detail': f'MaxAuthTries {val} allows too many password attempts',
+                                'remediation': 'Set MaxAuthTries 3 or lower'
+                            })
+                    except ValueError:
+                        pass
+
+        result['info'] = {'sshd_config_length': len(sshd_config), 'effective_settings_available': bool(sshd_T.strip())}
+        return result
+
+    def _collect_firewall(self) -> Dict:
+        """Collect firewall state for knowledge graph scanning."""
+        result = {'name': 'Firewall Configuration', 'findings': [], 'raw_config': ''}
+
+        ufw_out, _, _ = self.execute_command("ufw status verbose 2>/dev/null")
+        iptables_out, _, _ = self.execute_command("iptables -S 2>/dev/null | head -80")
+        nft_out, _, _ = self.execute_command("nft list ruleset 2>/dev/null | head -80")
+
+        firewall_text = ""
+        if ufw_out.strip() and 'command not found' not in ufw_out.lower():
+            firewall_text += "# UFW Status:\n" + ufw_out + "\n"
+            if 'inactive' in ufw_out.lower():
+                result['findings'].append({
+                    'title': 'Firewall (UFW) is inactive',
+                    'severity': 'high',
+                    'detail': 'UFW firewall is installed but not active',
+                    'remediation': 'Enable UFW: ufw enable'
+                })
+        if iptables_out.strip() and 'command not found' not in iptables_out.lower():
+            firewall_text += "# iptables rules:\n" + iptables_out + "\n"
+        if nft_out.strip() and 'command not found' not in nft_out.lower():
+            firewall_text += "# nftables ruleset:\n" + nft_out + "\n"
+
+        if not firewall_text.strip():
+            result['findings'].append({
+                'title': 'No firewall detected',
+                'severity': 'high',
+                'detail': 'Neither UFW nor iptables/nftables rules were found',
+                'remediation': 'Install and configure a firewall (ufw, iptables, or nftables)'
+            })
+
+        result['raw_config'] = firewall_text.strip()
+        return result
+
     def _scan_open_ports(self) -> Dict:
-        result = {'name': 'Open Ports Scan', 'findings': [], 'raw': ''}
+        result = {'name': 'Open Ports Scan', 'findings': [], 'raw': '', 'raw_config': ''}
         out, _, _ = self.execute_command("ss -tulnp 2>/dev/null || netstat -tulnp 2>/dev/null")
         result['raw'] = out
+        result['raw_config'] = out
 
         dangerous_ports = {21: 'FTP', 23: 'Telnet', 25: 'SMTP', 3306: 'MySQL',
                           5432: 'PostgreSQL', 6379: 'Redis', 27017: 'MongoDB',
@@ -1544,6 +1679,193 @@ class KubernetesPlatform(PlatformBase):
         return info
 
 
+class SimulatedPlatform(PlatformBase):
+    """
+    Demo/simulation platform — no cloud credentials needed.
+    Generates a realistic set of infrastructure resources for the demo story.
+    Safe for demos, evaluator pitches, and offline presentations.
+    """
+
+    # Realistic fixture: 12 resources spanning safe/review/unsafe cost decisions
+    _FIXTURE = {
+        "host": "demo-infra-sim",
+        "scenario": "GoodWinSun Demo Infrastructure",
+        "resources": [
+            {"id": "ec2-idle-01", "title": "Idle EC2 t3.medium (stopped 45 days)",
+             "type": "compute", "monthly_cost": 32.0, "potential_savings": "$32/month",
+             "detail": "Instance stopped for 45 days, no active workload.", "action": "terminate"},
+            {"id": "eip-unassoc-01", "title": "Unassociated Elastic IP",
+             "type": "network", "monthly_cost": 7.2, "potential_savings": "$7/month",
+             "detail": "Elastic IP allocated but not attached to any instance.", "action": "release"},
+            {"id": "ebs-detached-01", "title": "Detached EBS Volume (200 GB)",
+             "type": "storage", "monthly_cost": 20.0, "potential_savings": "$20/month",
+             "detail": "Volume detached from instance 30 days ago, no snapshots needed.", "action": "delete"},
+            {"id": "s3-public-db-01", "title": "S3 Bucket with Public Read (customer-data-backup)",
+             "type": "storage", "monthly_cost": 45.0, "potential_savings": "$15/month",
+             "detail": "Bucket has public read ACL. Contains customer database backups.",
+             "action": "restrict public access"},
+            {"id": "rds-oversized-01", "title": "RDS db.r5.xlarge (15% avg CPU)",
+             "type": "database", "monthly_cost": 280.0, "potential_savings": "$140/month",
+             "detail": "Database heavily over-provisioned. CPU avg 15% over 30 days.",
+             "action": "downsize to db.t3.large"},
+            {"id": "cloudtrail-disable", "title": "Disable CloudTrail Logging (3 regions)",
+             "type": "logging", "monthly_cost": 18.0, "potential_savings": "$18/month",
+             "detail": "Audit trail for API calls and user activity across 3 regions.",
+             "action": "disable audit logs"},
+            {"id": "cloudwatch-logs", "title": "Remove CloudWatch Log Retention",
+             "type": "monitoring", "monthly_cost": 22.0, "potential_savings": "$22/month",
+             "detail": "VPC flow logs, security group logs, auth events.",
+             "action": "disable monitoring retention"},
+            {"id": "nat-gw-idle-01", "title": "NAT Gateway (low traffic)",
+             "type": "network", "monthly_cost": 35.0, "potential_savings": "$35/month",
+             "detail": "NAT Gateway processing <1 GB/day consistently.", "action": "replace with NAT instance"},
+            {"id": "lb-no-targets", "title": "Load Balancer with No Healthy Targets",
+             "type": "network", "monthly_cost": 18.0, "potential_savings": "$18/month",
+             "detail": "ALB has no registered healthy targets for 21 days.", "action": "delete"},
+            {"id": "sg-public-22", "title": "Security Group: SSH Port 22 Open to 0.0.0.0/0",
+             "type": "security", "monthly_cost": 0.0, "potential_savings": "$0",
+             "detail": "SSH exposed to entire internet. No IP restriction.", "action": "restrict to known IPs"},
+            {"id": "reserved-unused", "title": "Unused Reserved Instance (1-year, us-east-1)",
+             "type": "compute", "monthly_cost": 55.0, "potential_savings": "$55/month",
+             "detail": "Reserved instance not matched to any running instance.", "action": "sell on marketplace"},
+            {"id": "snapshot-old", "title": "EBS Snapshots Older Than 180 Days (47 snapshots)",
+             "type": "storage", "monthly_cost": 28.0, "potential_savings": "$28/month",
+             "detail": "Old snapshots with no retention policy. No active restores in 6 months.",
+             "action": "delete old snapshots"},
+        ],
+        "security_events": [
+            {"timestamp": "2026-05-16T02:14:33Z", "event": "SSH brute-force", "source_ip": "185.220.101.42",
+             "attempts": 847, "target": "10.147.20.101", "status": "blocked_by_taaraware"},
+            {"timestamp": "2026-05-16T03:55:12Z", "event": "Unauthorized API call",
+             "user": "developer_temp_key", "action": "ec2:DescribeInstances from unusual region",
+             "status": "flagged"},
+            {"timestamp": "2026-05-15T22:01:55Z", "event": "Config drift detected",
+             "resource": "sshd_config", "change": "PermitRootLogin changed to yes",
+             "status": "alert_sent"},
+        ],
+        "summary": {"critical": 2, "high": 3, "medium": 4, "low": 2},
+        "features": {
+            "failed_logins": 847, "accepted_logins": 12, "unique_outbound_ips": 7,
+            "established_connections": 23, "open_ports": 4, "root_login_attempts": 14,
+        },
+    }
+
+    def __init__(self, config: Dict):
+        super().__init__('simulated', config)
+        self.scenario = config.get('scenario', 'default')
+
+    def connect(self) -> bool:
+        self.connected = True
+        self.connection_time = time.time()
+        return True
+
+    def disconnect(self):
+        self.connected = False
+
+    def collect_security_data(self) -> Dict:
+        f = self._FIXTURE
+        categories = {
+            "network_exposure": {
+                "name": "Network Exposure",
+                "findings": [
+                    {"title": "SSH Port 22 Open to 0.0.0.0/0", "detail": "No IP restriction on SSH.",
+                     "remediation": "Restrict to known IPs via security group.", "severity": "critical"},
+                    {"title": "S3 Bucket Public Read ACL", "detail": "customer-data-backup publicly readable.",
+                     "remediation": "Remove public ACL, enable bucket policy.", "severity": "critical"},
+                ],
+                "raw_config": "SecurityGroup sg-public-22: port 22 0.0.0.0/0 ALLOW\nS3 customer-data-backup: ACL public-read",
+            },
+            "auth_anomalies": {
+                "name": "Authentication Anomalies",
+                "findings": [
+                    {"title": "Brute-force campaign detected", "detail": "847 failed SSH attempts from 185.220.101.42.",
+                     "remediation": "IP already blocked by TaaraWare. Review fail2ban policy.", "severity": "high"},
+                    {"title": "Temporary IAM key used from unusual region",
+                     "detail": "developer_temp_key called ec2:DescribeInstances from eu-north-1.",
+                     "remediation": "Rotate key, add IAM condition for allowed regions.", "severity": "high"},
+                ],
+                "raw_config": "FailedSSH: 847 attempts in 90s\nIAM anomaly: developer_temp_key eu-north-1",
+            },
+            "config_drift": {
+                "name": "Configuration Drift",
+                "findings": [
+                    {"title": "PermitRootLogin changed to yes",
+                     "detail": "sshd_config modified at 22:01 UTC. Root login now permitted.",
+                     "remediation": "Revert to PermitRootLogin no immediately.", "severity": "high"},
+                ],
+                "raw_config": "sshd_config: PermitRootLogin yes (changed from no at 2026-05-15 22:01:55 UTC)",
+            },
+            "dependencies": {
+                "name": "Dependency Vulnerabilities",
+                "findings": [
+                    {"title": "EOL Base Image: node:14-alpine",
+                     "detail": "Node.js 14 reached EOL April 2023. No security patches.",
+                     "remediation": "Upgrade to node:20-alpine.", "severity": "medium"},
+                    {"title": "lodash 4.17.20 — GHSA-jf85-cpcp-j695",
+                     "detail": "Prototype pollution vulnerability.", "remediation": "Upgrade to 4.17.21+",
+                     "severity": "medium"},
+                ],
+                "raw_config": "FROM node:14-alpine\nlodash@4.17.20",
+            },
+        }
+        return {
+            "host": f["host"],
+            "platform": "simulated",
+            "summary": f["summary"],
+            "features": f["features"],
+            "categories": categories,
+            "security_events": f["security_events"],
+        }
+
+    def collect_metrics(self) -> Dict:
+        return {
+            "timestamp": time.time(),
+            "platform": "simulated",
+            "cpu_avg": 15.2,
+            "memory_used_gb": 3.4,
+            "disk_used_pct": 62,
+            "network_in_mbps": 12.4,
+            "network_out_mbps": 8.1,
+        }
+
+    def collect_cost_data(self) -> Dict:
+        resources = self._FIXTURE["resources"]
+        total_monthly = sum(r["monthly_cost"] for r in resources)
+        wasteful = [r for r in resources if r["monthly_cost"] > 0
+                    and r["id"] not in ("cloudtrail-disable", "cloudwatch-logs", "sg-public-22")]
+        potential_savings = sum(r["monthly_cost"] for r in wasteful)
+        return {
+            "platform": "simulated",
+            "scenario": self._FIXTURE["scenario"],
+            "total_monthly_cost": total_monthly,
+            "potential_monthly_savings": potential_savings,
+            "waste_findings": [
+                {
+                    "title": r["title"],
+                    "detail": r["detail"],
+                    "potential_savings": r["potential_savings"],
+                    "action": r["action"],
+                    "monthly_cost": r["monthly_cost"],
+                }
+                for r in resources
+            ],
+            "optimization_recommendations": [],
+        }
+
+    def get_platform_info(self) -> Dict:
+        return {
+            "platform": "simulated",
+            "scenario": self._FIXTURE["scenario"],
+            "connected": self.connected,
+            "resources": len(self._FIXTURE["resources"]),
+            "note": "Demo simulation — no real cloud credentials required.",
+        }
+
+    def get_raw_configs(self) -> Dict:
+        sec = self.collect_security_data()
+        return {cat: data.get("raw_config", "") for cat, data in sec.get("categories", {}).items()}
+
+
 # Platform factory
 PLATFORM_REGISTRY = {
     'ssh': SSHPlatform,
@@ -1551,7 +1873,8 @@ PLATFORM_REGISTRY = {
     'gcp': GCPPlatform,
     'azure': AzurePlatform,
     'docker': DockerPlatform,
-    'kubernetes': KubernetesPlatform
+    'kubernetes': KubernetesPlatform,
+    'simulated': SimulatedPlatform,
 }
 
 PLATFORM_DISPLAY_NAMES = {
@@ -1560,7 +1883,8 @@ PLATFORM_DISPLAY_NAMES = {
     'gcp': 'Google Cloud Platform (GCP)',
     'azure': 'Microsoft Azure',
     'docker': 'Docker Containers',
-    'kubernetes': 'Kubernetes Cluster'
+    'kubernetes': 'Kubernetes Cluster',
+    'simulated': 'Demo / Simulated Infrastructure',
 }
 
 PLATFORM_ICONS = {
@@ -1569,7 +1893,8 @@ PLATFORM_ICONS = {
     'gcp': '🌐',
     'azure': '🔷',
     'docker': '🐳',
-    'kubernetes': '☸️'
+    'kubernetes': '☸️',
+    'simulated': '🎮',
 }
 
 

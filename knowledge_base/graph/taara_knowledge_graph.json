@@ -1,0 +1,555 @@
+{
+  "nodes": [
+    {
+      "id": "ssh:password_auth_enabled",
+      "domain": "ssh",
+      "label": "Password auth enabled",
+      "severity": "critical",
+      "description": "SSH password auth allows brute force. Disable: PasswordAuthentication no",
+      "node_type": "risk"
+    },
+    {
+      "id": "ssh:root_login_enabled",
+      "domain": "ssh",
+      "label": "Root SSH login permitted",
+      "severity": "critical",
+      "description": "PermitRootLogin yes \u2014 direct root access, no audit trail",
+      "node_type": "risk"
+    },
+    {
+      "id": "ssh:weak_cipher",
+      "domain": "ssh",
+      "label": "Weak SSH cipher",
+      "severity": "high",
+      "description": "diffie-hellman-group1-sha1 present \u2014 Logjam attack vector",
+      "node_type": "risk"
+    },
+    {
+      "id": "ssh:no_idle_timeout",
+      "domain": "ssh",
+      "label": "No SSH idle timeout",
+      "severity": "medium",
+      "description": "Abandoned sessions usable for lateral movement",
+      "node_type": "risk"
+    },
+    {
+      "id": "ssh:no_max_auth_tries",
+      "domain": "ssh",
+      "label": "Unlimited SSH auth attempts",
+      "severity": "high",
+      "description": "Enables slow brute force undetected by default fail2ban rules",
+      "node_type": "risk"
+    },
+    {
+      "id": "ssh:x11_forwarding",
+      "domain": "ssh",
+      "label": "X11 forwarding enabled",
+      "severity": "medium",
+      "description": "Creates local socket exploitable for privilege escalation",
+      "node_type": "risk"
+    },
+    {
+      "id": "ssh:agent_forwarding",
+      "domain": "ssh",
+      "label": "Agent forwarding enabled",
+      "severity": "medium",
+      "description": "SSH agent hijacking in multi-hop scenarios",
+      "node_type": "risk"
+    },
+    {
+      "id": "docker:running_as_root",
+      "domain": "docker",
+      "label": "Container running as root",
+      "severity": "critical",
+      "description": "Root in container = root on host if escape. USER directive missing.",
+      "node_type": "risk"
+    },
+    {
+      "id": "docker:no_resource_limits",
+      "domain": "docker",
+      "label": "No container resource limits",
+      "severity": "high",
+      "description": "Single container can starve all others \u2014 DoS via resource exhaustion",
+      "node_type": "risk"
+    },
+    {
+      "id": "docker:privileged_mode",
+      "domain": "docker",
+      "label": "Container in privileged mode",
+      "severity": "critical",
+      "description": "Full host kernel access \u2014 complete container escape",
+      "node_type": "risk"
+    },
+    {
+      "id": "docker:mutable_filesystem",
+      "domain": "docker",
+      "label": "Mutable container filesystem",
+      "severity": "medium",
+      "description": "Attacker can persist changes inside container across restarts",
+      "node_type": "risk"
+    },
+    {
+      "id": "docker:secrets_in_env",
+      "domain": "docker",
+      "label": "Secrets passed via ENV vars",
+      "severity": "high",
+      "description": "docker inspect exposes ENV secrets to any process on host",
+      "node_type": "risk"
+    },
+    {
+      "id": "docker:secrets_in_build_arg",
+      "domain": "docker",
+      "label": "Secrets in Dockerfile ARG",
+      "severity": "high",
+      "description": "Build args visible in image history: docker history <image>",
+      "node_type": "risk"
+    },
+    {
+      "id": "docker:unpinned_base_image",
+      "domain": "docker",
+      "label": "Unpinned Docker base image",
+      "severity": "high",
+      "description": "FROM node:latest \u2014 silent image swap introduces CVEs",
+      "node_type": "risk"
+    },
+    {
+      "id": "docker:no_image_signing",
+      "domain": "docker",
+      "label": "No image signature verification",
+      "severity": "medium",
+      "description": "No guarantee image hasn't been tampered with in registry",
+      "node_type": "risk"
+    },
+    {
+      "id": "docker:network_default_bridge",
+      "domain": "docker",
+      "label": "Default bridge network",
+      "severity": "medium",
+      "description": "All containers on default bridge can communicate without restriction",
+      "node_type": "risk"
+    },
+    {
+      "id": "cicd:floating_action_pin",
+      "domain": "cicd",
+      "label": "Action pinned to floating tag",
+      "severity": "critical",
+      "description": "uses: action@v2 \u2014 tag can be moved to malicious commit (tj-actions attack)",
+      "node_type": "risk"
+    },
+    {
+      "id": "cicd:pull_request_target_unsafe",
+      "domain": "cicd",
+      "label": "Unsafe pull_request_target",
+      "severity": "critical",
+      "description": "pull_request_target + fork checkout = attacker code with write permissions",
+      "node_type": "risk"
+    },
+    {
+      "id": "cicd:script_injection",
+      "domain": "cicd",
+      "label": "Script injection via context",
+      "severity": "high",
+      "description": "${{ github.event.pull_request.title }} in run: step = shell injection",
+      "node_type": "risk"
+    },
+    {
+      "id": "cicd:over_permissioned_token",
+      "domain": "cicd",
+      "label": "GITHUB_TOKEN over-permissioned",
+      "severity": "high",
+      "description": "No permissions: block \u2014 default is broad read-write",
+      "node_type": "risk"
+    },
+    {
+      "id": "cicd:secrets_in_logs",
+      "domain": "cicd",
+      "label": "Secrets visible in CI logs",
+      "severity": "critical",
+      "description": "printenv or debug logging exposes all secrets to log readers",
+      "node_type": "risk"
+    },
+    {
+      "id": "cicd:unpinned_npm_install",
+      "domain": "cicd",
+      "label": "Unpinned npm install in CI",
+      "severity": "high",
+      "description": "npm install without lockfile = supply chain attack surface",
+      "node_type": "risk"
+    },
+    {
+      "id": "vibecode:slopsquatting",
+      "domain": "vibecode",
+      "label": "Slopsquatting risk",
+      "severity": "critical",
+      "description": "AI hallucinates package names. Attacker registers the hallucinated name.",
+      "node_type": "risk"
+    },
+    {
+      "id": "vibecode:secret_sprawl",
+      "domain": "vibecode",
+      "label": "Secret sprawl in AI code",
+      "severity": "high",
+      "description": "AI-generated code hardcodes secrets 2x more than human code",
+      "node_type": "risk"
+    },
+    {
+      "id": "vibecode:zombie_infra",
+      "domain": "vibecode",
+      "label": "Zombie infrastructure",
+      "severity": "medium",
+      "description": "Vibe-deployed infra forgotten \u2014 no one owns it, no one patches it",
+      "node_type": "risk"
+    },
+    {
+      "id": "vibecode:schema_drift",
+      "domain": "vibecode",
+      "label": "Silent DB schema drift",
+      "severity": "high",
+      "description": "AI migration runs clean but corrupts downstream reports 3 months later",
+      "node_type": "risk"
+    },
+    {
+      "id": "vibecode:dependency_hallucination",
+      "domain": "vibecode",
+      "label": "Hallucinated dependencies",
+      "severity": "critical",
+      "description": "AI suggests package that doesn't exist \u2014 real package name squatted",
+      "node_type": "risk"
+    },
+    {
+      "id": "auth:no_mfa",
+      "domain": "auth",
+      "label": "No MFA on admin accounts",
+      "severity": "high",
+      "description": "Single factor auth \u2014 credential stuffing and phishing bypass",
+      "node_type": "risk"
+    },
+    {
+      "id": "auth:weak_session_tokens",
+      "domain": "auth",
+      "label": "Weak session token entropy",
+      "severity": "high",
+      "description": "Predictable session IDs enable session fixation attacks",
+      "node_type": "risk"
+    },
+    {
+      "id": "auth:no_rate_limiting",
+      "domain": "auth",
+      "label": "No login rate limiting",
+      "severity": "high",
+      "description": "Credential stuffing attacks go undetected",
+      "node_type": "risk"
+    },
+    {
+      "id": "auth:jwt_none_algorithm",
+      "domain": "auth",
+      "label": "JWT none algorithm accepted",
+      "severity": "critical",
+      "description": "Unsigned JWT accepted as valid \u2014 complete auth bypass",
+      "node_type": "risk"
+    },
+    {
+      "id": "infra:public_s3_bucket",
+      "domain": "infra",
+      "label": "Public S3 bucket",
+      "severity": "critical",
+      "description": "Misconfigured bucket exposes data to anyone on internet",
+      "node_type": "risk"
+    },
+    {
+      "id": "infra:unencrypted_storage",
+      "domain": "infra",
+      "label": "Unencrypted storage at rest",
+      "severity": "high",
+      "description": "Data readable if disk is physically or logically accessed",
+      "node_type": "risk"
+    },
+    {
+      "id": "infra:no_vpc_isolation",
+      "domain": "infra",
+      "label": "No VPC network isolation",
+      "severity": "high",
+      "description": "Services reachable from internet that should be internal-only",
+      "node_type": "risk"
+    },
+    {
+      "id": "infra:default_credentials",
+      "domain": "infra",
+      "label": "Default service credentials",
+      "severity": "critical",
+      "description": "Default admin:admin or similar \u2014 first thing attackers try",
+      "node_type": "risk"
+    },
+    {
+      "id": "infra:missing_audit_logs",
+      "domain": "infra",
+      "label": "Missing audit logs",
+      "severity": "high",
+      "description": "Breach undetectable \u2014 no forensic trail",
+      "node_type": "risk"
+    },
+    {
+      "id": "fix:disable_password_auth",
+      "domain": "fix",
+      "label": "PasswordAuthentication no",
+      "severity": "none",
+      "description": "Set in /etc/ssh/sshd_config",
+      "node_type": "mitigation"
+    },
+    {
+      "id": "fix:pin_action_to_sha",
+      "domain": "fix",
+      "label": "Pin action to commit SHA",
+      "severity": "none",
+      "description": "uses: owner/repo@<full-sha> # tag",
+      "node_type": "mitigation"
+    },
+    {
+      "id": "fix:use_secrets_manager",
+      "domain": "fix",
+      "label": "Use secrets manager (not ENV)",
+      "severity": "none",
+      "description": "AWS Secrets Manager, Vault, or GitHub Secrets \u2014 never ENV vars in Dockerfile",
+      "node_type": "mitigation"
+    },
+    {
+      "id": "fix:add_resource_limits",
+      "domain": "fix",
+      "label": "Add Docker resource limits",
+      "severity": "none",
+      "description": "--memory=512m --cpus=0.5 or deploy.resources in compose",
+      "node_type": "mitigation"
+    },
+    {
+      "id": "fix:run_as_nonroot",
+      "domain": "fix",
+      "label": "Run container as non-root USER",
+      "severity": "none",
+      "description": "USER 1001 in Dockerfile, verify with docker run --user",
+      "node_type": "mitigation"
+    },
+    {
+      "id": "fix:pin_base_image_sha",
+      "domain": "fix",
+      "label": "Pin base image to digest",
+      "severity": "none",
+      "description": "FROM node:20@sha256:<digest> \u2014 immutable reference",
+      "node_type": "mitigation"
+    },
+    {
+      "id": "fix:env_var_intermediary",
+      "domain": "fix",
+      "label": "Use env: for untrusted input",
+      "severity": "none",
+      "description": "Set env: PR_TITLE: ${{ ... }} then use $PR_TITLE in shell",
+      "node_type": "mitigation"
+    },
+    {
+      "id": "fix:restrict_token_perms",
+      "domain": "fix",
+      "label": "Add permissions: block",
+      "severity": "none",
+      "description": "permissions: contents: read \u2014 minimum needed per job",
+      "node_type": "mitigation"
+    },
+    {
+      "id": "fix:enable_fail2ban",
+      "domain": "fix",
+      "label": "Enable fail2ban for SSH",
+      "severity": "none",
+      "description": "Ban IP after 3 failed attempts \u2014 blocks slow brute force",
+      "node_type": "mitigation"
+    },
+    {
+      "id": "fix:lockfile_in_ci",
+      "domain": "fix",
+      "label": "Commit package lockfile, use ci",
+      "severity": "none",
+      "description": "npm ci not npm install \u2014 uses exact lockfile versions",
+      "node_type": "mitigation"
+    },
+    {
+      "id": "incident:tj_actions_2025",
+      "domain": "incident",
+      "label": "tj-actions supply chain compromise",
+      "severity": "critical",
+      "description": "March 2025: tj-actions/changed-files compromised, 23,000+ repos leaked secrets via CI logs",
+      "node_type": "incident"
+    },
+    {
+      "id": "incident:codecov_2021",
+      "domain": "incident",
+      "label": "Codecov bash uploader backdoor",
+      "severity": "critical",
+      "description": "April 2021: Codecov's bash uploader modified to exfiltrate CI environment variables",
+      "node_type": "incident"
+    },
+    {
+      "id": "incident:uber_2022",
+      "domain": "incident",
+      "label": "Uber HackerOne MFA fatigue",
+      "severity": "critical",
+      "description": "September 2022: Attacker spammed MFA push notifications until employee approved",
+      "node_type": "incident"
+    },
+    {
+      "id": "incident:solarwinds_2020",
+      "domain": "incident",
+      "label": "SolarWinds Orion supply chain",
+      "severity": "critical",
+      "description": "2020: Build pipeline compromised, malicious code shipped in signed update to 18,000 customers",
+      "node_type": "incident"
+    },
+    {
+      "id": "incident:log4shell_2021",
+      "domain": "incident",
+      "label": "Log4Shell remote code execution",
+      "severity": "critical",
+      "description": "December 2021: CVE-2021-44228, JNDI lookup in log messages, billions of Java apps affected",
+      "node_type": "incident"
+    },
+    {
+      "id": "incident:capital_one_2019",
+      "domain": "incident",
+      "label": "Capital One SSRF + S3 misconfiguration",
+      "severity": "critical",
+      "description": "2019: SSRF on EC2 metadata endpoint + public S3 bucket, 100M records exposed",
+      "node_type": "incident"
+    },
+    {
+      "id": "incident:event_stream_2018",
+      "domain": "incident",
+      "label": "event-stream malicious dependency",
+      "severity": "critical",
+      "description": "2018: npm package (8M weekly downloads) compromised via maintainer handoff, stole Bitcoin wallets",
+      "node_type": "incident"
+    }
+  ],
+  "edges": [
+    {
+      "source": "ssh:password_auth_enabled",
+      "target": "fix:disable_password_auth",
+      "relationship": "mitigated_by"
+    },
+    {
+      "source": "ssh:root_login_enabled",
+      "target": "infra:missing_audit_logs",
+      "relationship": "bypasses"
+    },
+    {
+      "source": "ssh:no_max_auth_tries",
+      "target": "fix:enable_fail2ban",
+      "relationship": "mitigated_by"
+    },
+    {
+      "source": "docker:running_as_root",
+      "target": "fix:run_as_nonroot",
+      "relationship": "mitigated_by"
+    },
+    {
+      "source": "docker:running_as_root",
+      "target": "docker:privileged_mode",
+      "relationship": "enables"
+    },
+    {
+      "source": "docker:no_resource_limits",
+      "target": "fix:add_resource_limits",
+      "relationship": "mitigated_by"
+    },
+    {
+      "source": "docker:secrets_in_env",
+      "target": "fix:use_secrets_manager",
+      "relationship": "mitigated_by"
+    },
+    {
+      "source": "docker:secrets_in_build_arg",
+      "target": "fix:use_secrets_manager",
+      "relationship": "mitigated_by"
+    },
+    {
+      "source": "docker:unpinned_base_image",
+      "target": "fix:pin_base_image_sha",
+      "relationship": "mitigated_by"
+    },
+    {
+      "source": "cicd:floating_action_pin",
+      "target": "fix:pin_action_to_sha",
+      "relationship": "mitigated_by"
+    },
+    {
+      "source": "cicd:floating_action_pin",
+      "target": "incident:tj_actions_2025",
+      "relationship": "exploited_in"
+    },
+    {
+      "source": "cicd:floating_action_pin",
+      "target": "cicd:secrets_in_logs",
+      "relationship": "causes"
+    },
+    {
+      "source": "cicd:script_injection",
+      "target": "fix:env_var_intermediary",
+      "relationship": "mitigated_by"
+    },
+    {
+      "source": "cicd:over_permissioned_token",
+      "target": "fix:restrict_token_perms",
+      "relationship": "mitigated_by"
+    },
+    {
+      "source": "cicd:secrets_in_logs",
+      "target": "incident:tj_actions_2025",
+      "relationship": "exploited_in"
+    },
+    {
+      "source": "cicd:unpinned_npm_install",
+      "target": "fix:lockfile_in_ci",
+      "relationship": "mitigated_by"
+    },
+    {
+      "source": "cicd:unpinned_npm_install",
+      "target": "incident:event_stream_2018",
+      "relationship": "exploited_in"
+    },
+    {
+      "source": "vibecode:slopsquatting",
+      "target": "vibecode:dependency_hallucination",
+      "relationship": "causes"
+    },
+    {
+      "source": "vibecode:zombie_infra",
+      "target": "infra:default_credentials",
+      "relationship": "causes"
+    },
+    {
+      "source": "vibecode:schema_drift",
+      "target": "infra:missing_audit_logs",
+      "relationship": "masked_by"
+    },
+    {
+      "source": "auth:no_mfa",
+      "target": "incident:uber_2022",
+      "relationship": "exploited_in"
+    },
+    {
+      "source": "infra:public_s3_bucket",
+      "target": "incident:capital_one_2019",
+      "relationship": "exploited_in"
+    },
+    {
+      "source": "infra:missing_audit_logs",
+      "target": "ssh:password_auth_enabled",
+      "relationship": "hides"
+    },
+    {
+      "source": "incident:solarwinds_2020",
+      "target": "incident:tj_actions_2025",
+      "relationship": "pattern_repeated_in"
+    },
+    {
+      "source": "incident:event_stream_2018",
+      "target": "incident:tj_actions_2025",
+      "relationship": "pattern_repeated_in"
+    }
+  ]
+}

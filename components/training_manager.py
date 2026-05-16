@@ -152,61 +152,74 @@ class TrainingManager:
         try:
             self.training_state['current_phase'] = 'Phase 1: Collecting behavioral baseline...'
 
-            collector = None
-            if platform.platform_type == 'ssh':
-                from components.ssh_manager import SSHManager
-                ssh_mgr = SSHManager(
-                    platform.config['host'],
-                    platform.config['username'],
-                    platform.config.get('password', '')
+            # If baseline_data was pre-seeded via load_from_remote_buffer(), skip live collection
+            if self.baseline_data:
+                self.training_state['current_phase'] = (
+                    f'Phase 1: Using {len(self.baseline_data)} pre-loaded remote buffer samples...'
                 )
-                ssh_mgr.connect()
-                collector = collector_class(ssh_mgr)
-
-            start = time.time()
-            sample_count = 0
-
-            while not self.stop_flag.is_set():
-                elapsed = time.time() - start
-
-                if mode != 'continuous' and elapsed >= duration:
-                    break
-                if expected > 0 and sample_count >= expected:
-                    break
-
-                try:
-                    if collector:
-                        features = collector.get_feature_vector()
-                    else:
-                        security_data = platform.collect_security_data()
-                        feat_dict = security_data.get('features', {})
-                        features = np.array([float(v) for v in feat_dict.values()], dtype=np.float32)
-                        if len(features) < 19:
-                            features = np.pad(features, (0, max(0, 19 - len(features))))
-
-                    self.baseline_data.append(features)
-                    sample_count += 1
-                    self.training_state['samples_collected'] = sample_count
-
-                    if expected > 0:
-                        self.training_state['progress'] = min(
-                            sample_count / expected * 60, 60.0
-                        )
-                    else:
-                        self.training_state['progress'] = min(elapsed / 3600 * 100, 99.0)
-
-                    self.training_state['current_phase'] = (
-                        f'Phase 1: Collecting baseline... '
-                        f'({sample_count}/{expected if expected > 0 else "continuous"} samples)'
+                self.training_state['samples_collected'] = len(self.baseline_data)
+                self.training_state['progress'] = 60.0
+            else:
+                collector = None
+                if platform.platform_type == 'ssh':
+                    from components.ssh_manager import SSHManager
+                    ssh_mgr = SSHManager(
+                        platform.config['host'],
+                        platform.config['username'],
+                        platform.config.get('password', '')
                     )
+                    ssh_mgr.connect()
+                    collector = collector_class(ssh_mgr)
 
-                except Exception as e:
-                    self.training_state['errors'].append(f'Collection error: {str(e)[:100]}')
+                start = time.time()
+                sample_count = 0
 
-                for _ in range(interval):
-                    if self.stop_flag.is_set():
+                while not self.stop_flag.is_set():
+                    elapsed = time.time() - start
+
+                    if mode != 'continuous' and elapsed >= duration:
                         break
-                    time.sleep(1)
+                    if expected > 0 and sample_count >= expected:
+                        break
+
+                    try:
+                        if collector:
+                            features = collector.get_feature_vector()
+                        else:
+                            security_data = platform.collect_security_data()
+                            feat_dict = security_data.get('features', {})
+                            features = np.array([float(v) for v in feat_dict.values()], dtype=np.float32)
+                            if len(features) < 19:
+                                features = np.pad(features, (0, max(0, 19 - len(features))))
+
+                        self.baseline_data.append(features)
+                        sample_count += 1
+                        self.training_state['samples_collected'] = sample_count
+
+                        if expected > 0:
+                            self.training_state['progress'] = min(
+                                sample_count / expected * 60, 60.0
+                            )
+                        else:
+                            self.training_state['progress'] = min(elapsed / 3600 * 100, 99.0)
+
+                        self.training_state['current_phase'] = (
+                            f'Phase 1: Collecting baseline... '
+                            f'({sample_count}/{expected if expected > 0 else "continuous"} samples)'
+                        )
+
+                    except Exception as e:
+                        self.training_state['errors'].append(f'Collection error: {str(e)[:100]}')
+
+                    for _ in range(interval):
+                        if self.stop_flag.is_set():
+                            break
+                        time.sleep(1)
+
+                if self.stop_flag.is_set():
+                    self.training_state['status'] = 'stopped'
+                    self.training_state['current_phase'] = 'Training stopped by user'
+                    return
 
             if self.stop_flag.is_set():
                 self.training_state['status'] = 'stopped'
@@ -275,6 +288,56 @@ class TrainingManager:
             self.training_state['status'] = 'failed'
             self.training_state['current_phase'] = f'Training failed: {str(e)[:200]}'
             self.training_state['errors'].append(str(e))
+
+    def load_from_remote_buffer(self, host: str, buffer_data: List[Dict]) -> Dict:
+        """
+        Feed feature_buffer.json data fetched by collect_remote_data() into the training pipeline.
+        Call this before start_training() to seed baseline_data with historical agent samples.
+
+        buffer_data: list of dicts from feature_buffer.json, each must have a 'features' key
+                     (list of floats) or be a flat list of floats.
+        Returns: dict with status, vectors_loaded, message.
+        """
+        if not buffer_data:
+            return {'status': 'error', 'message': f'No buffer data for {host}'}
+
+        _INTERNAL_KEYS = {'timestamp', 'hostname', 'time', '_proc_pair_hashes',
+                          '_bash_history_lines', '_auth_log_size'}
+        vectors = []
+        for entry in buffer_data:
+            try:
+                if isinstance(entry, dict) and 'features' in entry:
+                    raw = entry['features']
+                    if isinstance(raw, dict):
+                        v = np.array([float(x) for k, x in raw.items()
+                                      if k not in _INTERNAL_KEYS], dtype=np.float32)
+                    else:
+                        v = np.array(raw, dtype=np.float32)
+                elif isinstance(entry, dict):
+                    # Flat dict format from TaaraWare agent
+                    v = np.array([float(val) for k, val in entry.items()
+                                  if k not in _INTERNAL_KEYS and isinstance(val, (int, float))],
+                                 dtype=np.float32)
+                elif isinstance(entry, (list, tuple)):
+                    v = np.array(entry, dtype=np.float32)
+                else:
+                    continue
+                if len(v) < 19:
+                    v = np.pad(v, (0, 19 - len(v)))
+                vectors.append(v[:19])
+            except Exception:
+                continue
+
+        if len(vectors) < 5:
+            return {'status': 'error',
+                    'message': f'Only {len(vectors)} valid vectors parsed (need 5+)'}
+
+        self.baseline_data = [np.array(v) for v in vectors]
+        return {
+            'status': 'success',
+            'vectors_loaded': len(vectors),
+            'message': f'Loaded {len(vectors)} samples from {host} into baseline_data'
+        }
 
     def stop_training(self):
         """Stop ongoing training."""

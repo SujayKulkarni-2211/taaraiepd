@@ -1,6 +1,6 @@
 # TAARA — Trajectory-Aware Adaptive Residual Analysis
 
-**Quantum-Enhanced Security System for SMEs**
+**Quantum-Enhanced Security System**
 
 *"Prevent Crash, Preserve Cash"*
 

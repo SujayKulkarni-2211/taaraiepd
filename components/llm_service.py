@@ -1,19 +1,12 @@
 import re
 from typing import Dict, List, Any, Optional
-from google import genai
+from groq import Groq
 
 
 class LLMService:
-    """
-    Unified LLM service using Google GenAI SDK.
-    Uses ONLY models confirmed via list_models().
-    """
-
     def __init__(self, api_key: str):
-        self.client = genai.Client(api_key=api_key)
-
-        # ✅ THIS IS THE KEY FIX
-        self.model = "models/gemini-3-flash-preview"
+        self.client = Groq(api_key=api_key)
+        self.model = "llama-3.3-70b-versatile"
 
     def parse_markdown_code(self, text: str):
         blocks = []
@@ -29,12 +22,13 @@ class LLMService:
             if context:
                 prompt += f"\n\nContext:\n{context}"
 
-            response = self.client.models.generate_content(
+            response = self.client.chat.completions.create(
                 model=self.model,
-                contents=prompt
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1024,
             )
 
-            text = response.text.strip()
+            text = response.choices[0].message.content.strip()
 
             return {
                 "success": True,

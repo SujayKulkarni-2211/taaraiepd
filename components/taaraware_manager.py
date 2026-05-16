@@ -2,25 +2,68 @@
 TaaraWare Deployment & Management
 ===================================
 
-TaaraWare is the lightweight monitoring agent deployed to customer servers.
-It runs on CPU only and sends telemetry to the Taara Command Center.
+TaaraWare is an always-on collector + policy-bounded action layer deployed
+to customer infrastructure. It is NOT a standalone security scanner —
+it is the continuous collection and enforcement arm of TAARA.
 
 Architecture:
-- TaaraWare (on customer server): Lightweight collector, runs on CPU
-- Taara Command Center (admin laptop): ML + Quantum analysis, dashboards
+  TaaraWare (on customer server/infra): Lightweight collector — CPU only
+  TAARA Command Center (admin laptop/cloud): ML + Quantum analysis, decisions
+  Human operator: approves high-impact actions
 
-TaaraWare capabilities:
-- Collects system metrics every 10 minutes
-- Sends notifications to command center on anomalies
-- Can trigger remote analysis from command center
-- Basic rule-based alerting (CPU threshold)
-- Federated: raw data stays on customer, only features sent to command center
+Three pillars of collection:
+
+  1. Security Behavior
+     - Auth events (failed/accepted logins per identity per window)
+     - Connection patterns (new outbound IPs, port changes)
+     - Process and network anomaly signals
+     - Raw SSH config / open port changes
+     -> Fed to TAARA reconstruction-based memory: detects behavioral drift
+        before it shows up as a measurable event
+
+  2. Config / Deploy Drift
+     - sshd_config changes (file hash diff)
+     - New ports opened (ss -tulnp delta)
+     - Dockerfile / CI config changes (git diff on watched paths)
+     - Unauthorized package installs
+     -> Policy-bounded alerting: alerts on unauthorized config changes
+
+  3. Resource / Spend Signals
+     - CPU/memory/disk usage trends
+     - Storage growth rate
+     - Cloud API cost deltas (for cloud-connected deployments)
+     - Runaway process detection (>90% CPU for >5 min)
+     -> Early-warning on runaway costs and resource anomalies
+        before they affect production or billing
+
+Autonomy model (policy-bounded):
+  TaaraWare collects lightweight signals locally.
+  TAARA Command Center analyzes and approves actions.
+  Human approval required for high-impact actions.
+
+  Allowed without approval (pre-approved policy):
+    - Block repeated SSH brute-force IP (>50 fails, 0 success, <10 min window)
+    - Alert on new public port opened
+    - Restart failed monitoring service (health check fails 3x)
+    - Pause non-critical runaway process (>95% CPU, pre-approved list only)
+
+  Always require human approval:
+    - Delete or terminate cloud resource
+    - Broad firewall rule changes
+    - Rotate production secrets
+    - Modify CI/CD configuration
+    - Terminate server or container
+
+Federated design: raw data stays on customer infrastructure.
+Only feature vectors and alert payloads are sent to Command Center.
 """
 
 import streamlit as st
 import time
 import json
 import os
+import secrets
+import hashlib
 import threading
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -31,14 +74,21 @@ TAARAWARE_AGENT_SCRIPT = '''#!/usr/bin/env python3
 """
 TaaraWare Agent v2.0
 ====================
-Lightweight security monitoring agent for customer servers.
+Always-on collector + policy-bounded action layer for customer infrastructure.
 Deployed by TAARA Command Center.
 
-- Runs on CPU only (no GPU required)
-- Collects behavioral features every interval
-- Sends feature vectors to command center
-- Basic local anomaly detection for immediate alerts
-- Federated: raw data never leaves the server
+Three pillars:
+  1. Security Behavior — auth events, connection patterns, process signals
+  2. Config/Deploy Drift — sshd_config changes, new ports, CI config diffs
+  3. Resource/Spend Signals — CPU/memory trends, storage growth, cost deltas
+
+Architecture:
+  - Runs on CPU only (no GPU required)
+  - Collects lightweight signals locally every interval
+  - Sends feature vectors + alert payloads to Command Center (not raw data)
+  - Policy-bounded autonomy: blocks brute-force, alerts on drift
+  - High-impact actions require Command Center + human approval
+  - Federated: raw infrastructure data never leaves the server
 """
 
 import os
@@ -193,7 +243,135 @@ def collect_features():
     features["timestamp"] = time.time()
     features["hostname"] = socket.gethostname()
 
+    # --- Hidden features (model-only, not shown in UI) ---
+    _add_hidden_features(features)
+
     return features
+
+
+def _add_hidden_features(features):
+    """Add 3 hidden behavioral signals. Feed into model only — not displayed in UI."""
+
+    # 1. temporal_rhythm_deviation
+    # Compare current hour to hour distribution of last 100 buffer entries.
+    # If this hour appeared <5% historically → 1.0 (novel time), else 0.0.
+    try:
+        temporal_val = 0.0
+        if FEATURE_BUFFER.exists():
+            with open(FEATURE_BUFFER) as f:
+                buf = json.load(f)
+            recent = buf[-100:] if len(buf) >= 100 else buf
+            if len(recent) >= 50:
+                hour_counts = defaultdict(int)
+                for entry in recent:
+                    ts = entry.get("timestamp", 0)
+                    hour_counts[datetime.fromtimestamp(ts).hour] += 1
+                current_hour = datetime.now().hour
+                current_hour_pct = hour_counts.get(current_hour, 0) / len(recent)
+                temporal_val = 1.0 if current_hour_pct < 0.05 else 0.0
+        features["temporal_rhythm_deviation"] = temporal_val
+    except Exception:
+        features["temporal_rhythm_deviation"] = 0.0
+
+    # 2. causal_chain_novelty
+    # Count parent→child process pairs never seen in last 50 buffer entries.
+    # Value = new_pairs / total_pairs (0.0–1.0).
+    try:
+        ps_out = run_cmd("ps -eo ppid,pid,comm --no-headers")
+        current_pairs = set()
+        for line in ps_out.split("\\n"):
+            parts = line.split()
+            if len(parts) >= 3:
+                try:
+                    pair_hash = hashlib.md5(
+                        f"{parts[0]}:{parts[2]}".encode()
+                    ).hexdigest()
+                    current_pairs.add(pair_hash)
+                except Exception:
+                    continue
+
+        historical_pairs = set()
+        if FEATURE_BUFFER.exists():
+            with open(FEATURE_BUFFER) as f:
+                buf = json.load(f)
+            recent = buf[-50:] if len(buf) >= 50 else buf
+            for entry in recent:
+                for h in entry.get("_proc_pair_hashes", []):
+                    historical_pairs.add(h)
+
+        # Store current hashes in this entry for future comparisons
+        features["_proc_pair_hashes"] = list(current_pairs)
+
+        if current_pairs:
+            new_pairs = current_pairs - historical_pairs
+            features["causal_chain_novelty"] = len(new_pairs) / len(current_pairs)
+        else:
+            features["causal_chain_novelty"] = 0.0
+    except Exception:
+        features["causal_chain_novelty"] = 0.0
+
+    # 3. concealment_signal — average of 3 sub-signals
+    try:
+        sub_signals = []
+
+        # Sub-signal 1: auth.log growth
+        try:
+            auth_log = Path("/var/log/auth.log")
+            auth_val = 0.0
+            if auth_log.exists():
+                current_size = auth_log.stat().st_size
+                prev_size = 0
+                if FEATURE_BUFFER.exists():
+                    with open(FEATURE_BUFFER) as f:
+                        buf = json.load(f)
+                    if buf:
+                        prev_size = buf[-1].get("_auth_log_size", 0)
+                current_hour = datetime.now().hour
+                business_hours = 8 <= current_hour < 20
+                if business_hours and current_size <= prev_size:
+                    auth_val = 1.0
+                features["_auth_log_size"] = current_size
+            sub_signals.append(auth_val)
+        except Exception:
+            sub_signals.append(0.0)
+
+        # Sub-signal 2: shell history entropy (decreased line count = suspicious)
+        try:
+            hist_val = 0.0
+            hist_file = Path("/root/.bash_history")
+            if hist_file.exists():
+                current_lines = int(run_cmd("wc -l < /root/.bash_history") or "0")
+                prev_lines = 0
+                if FEATURE_BUFFER.exists():
+                    with open(FEATURE_BUFFER) as f:
+                        buf = json.load(f)
+                    if buf:
+                        prev_lines = buf[-1].get("_bash_history_lines", 0)
+                if current_lines < prev_lines:
+                    hist_val = 1.0
+                features["_bash_history_lines"] = current_lines
+            sub_signals.append(hist_val)
+        except Exception:
+            sub_signals.append(0.0)
+
+        # Sub-signal 3: cron silence (scheduled job produced no log in last 10 min)
+        try:
+            cron_val = 0.0
+            cron_log = Path("/var/log/cron")
+            crontab_out = run_cmd("crontab -l 2>/dev/null")
+            if crontab_out and cron_log.exists():
+                now = time.time()
+                cron_log_mtime = cron_log.stat().st_mtime
+                if now - cron_log_mtime > 600:
+                    # Cron log not updated in 10 min but jobs exist
+                    cron_val = 1.0
+            sub_signals.append(cron_val)
+        except Exception:
+            sub_signals.append(0.0)
+
+        features["concealment_signal"] = sum(sub_signals) / len(sub_signals) if sub_signals else 0.0
+    except Exception:
+        features["concealment_signal"] = 0.0
 
 
 def parse_etime(etime):
@@ -404,13 +582,53 @@ WantedBy=multi-user.target
             status_out, _, _ = platform.execute_command("systemctl is-active taaraware")
 
             host = platform.config.get('host', 'unknown')
+
+            # PQC key generation — Kyber768 (ML-KEM, NIST FIPS 203)
+            try:
+                import oqs
+                kem = oqs.KeyEncapsulation('Kyber768')
+                public_key = kem.generate_keypair()
+                ciphertext, shared_secret = kem.encap_secret(public_key)
+                fingerprint = public_key.hex()[:8]
+
+                keys_path = 'models/client_keys.json'
+                os.makedirs('models', exist_ok=True)
+                try:
+                    with open(keys_path, 'r') as f:
+                        client_keys = json.load(f)
+                except Exception:
+                    client_keys = {}
+
+                client_keys[host] = {
+                    'public_key': public_key.hex(),
+                    'ciphertext': ciphertext.hex(),
+                    'fingerprint': fingerprint,
+                    'algorithm': 'Kyber768',
+                    'generated_at': time.time(),
+                }
+                with open(keys_path, 'w') as f:
+                    json.dump(client_keys, f)
+
+                # Shared secret stays in memory only — never written to disk or server
+                try:
+                    import streamlit as _st
+                    if 'client_shared_secrets' not in _st.session_state:
+                        _st.session_state['client_shared_secrets'] = {}
+                    _st.session_state['client_shared_secrets'][host] = shared_secret.hex()
+                except Exception:
+                    pass
+
+            except Exception as pqc_err:
+                fingerprint = 'pqc_unavailable'
+
             agent_info = {
                 'host': host,
                 'platform': ptype,
                 'deployed_at': time.time(),
                 'status': status_out.strip(),
                 'config': agent_config,
-                'version': '2.0.0'
+                'version': '2.0.0',
+                'key_fingerprint': fingerprint,
             }
             self.deployed_agents[host] = agent_info
             self._save_state()
@@ -421,6 +639,7 @@ WantedBy=multi-user.target
             else:
                 result['success'] = True
                 result['message'] = f'TaaraWare agent deployed to {host} (status: {status_out.strip()})'
+            result['key_fingerprint'] = fingerprint
 
         except Exception as e:
             result['message'] = f'Deployment error: {str(e)}'

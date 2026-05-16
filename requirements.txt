@@ -18,9 +18,13 @@ scipy>=1.11.0
 # Quantum Computing (Simulation)
 pennylane>=0.38.0
 
+# Post-Quantum Cryptography (NIST FIPS 203 — ML-KEM / Kyber768)
+liboqs-python>=0.12.0
+
 # LLM Integration
 google-generativeai>=0.7.0
 google-genai
+groq>=1.0.0
 
 # PDF Report Generation
 reportlab>=4.0.0
@@ -32,6 +36,15 @@ reportlab>=4.0.0
 # pip install docker             # Docker
 # pip install kubernetes         # Kubernetes
 
+# Knowledge Base & GraphRAG
+sentence-transformers>=3.0.0
+faiss-cpu>=1.8.0
+networkx>=3.0
+
+# Visualization
+plotly>=5.18.0
+
 # Utilities
 markdown>=3.0
 typing-extensions>=4.0.0
+psutil>=5.9.0

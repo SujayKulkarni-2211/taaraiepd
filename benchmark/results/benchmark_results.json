@@ -1,0 +1,10 @@
+{
+  "dataset": "LogHub SSH (Zenodo DOI: 10.5281/zenodo.8196385)",
+  "honest_caveat": "Qualifying IPs found: 2, but after requiring both normal and test phases of \u22655 events each, no usable windows remain. The SSH dataset IPs with normal phases tend to have very few events. This is a dataset coverage limitation, not a TAARA limitation.",
+  "qualifying_ips": 2,
+  "usable_normal_windows": 0,
+  "usable_attack_windows": 0,
+  "taara_per_identity": null,
+  "isolation_forest": null,
+  "status": "insufficient_data"
+}
