@@ -732,12 +732,12 @@ Modify in the Training section of the UI, or edit `models/training_config.json`:
 ### Citation
 
 ```
-Kaparthi, S. (2026). "TAARA: Trajectory-Aware Adaptive Residual Analysis —
+Kulkarni, S. (2026). "TAARA: Trajectory-Aware Adaptive Residual Analysis —
 Reconstruction-Based Behavioral Novelty Detection for Early-Stage Identity Attacks."
 RV University, Bangalore. January 27, 2026.
 ```
 
-**Author**: Sujay Kaparthi, RV University, Bangalore (`sujayvk.btech23@rvu.edu.in`)
+**Author**: Sujay Kulkarni, RV University, Bangalore (`sujayvk.btech23@rvu.edu.in`)
 
 **Full paper**: Included in this repository as `components/taara.pdf` (18 pages).
 
@@ -964,4 +964,4 @@ We thank the SecRepo project for providing open authentication log data, and ack
 
 *TAARA: Trajectory-Aware Adaptive Residual Analysis — Prevent Crash, Preserve Cash*
 
-*Sujay Kaparthi | RV University, Bangalore | 2026*
+*Sujay V Kulkarni | RV University, Bangalore | 2026*
