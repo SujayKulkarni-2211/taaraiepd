@@ -9,8 +9,8 @@ const SSH_STEPS = [
   'Analysing authentication logs…',
   'Checking sudo & privilege escalation…',
   'Running knowledge-base policy scan…',
-  'Encoding feature vector (4-qubit angle encoding)…',
-  'Computing quantum fidelity F = |⟨ψ_t|ψ_m⟩|²…',
+  'Encoding behavioral latent (3-qubit AmplitudeEmbedding)…',
+  'Computing quantum subspace fidelity F_sub = Σ|⟨ψ_t|ψ_k⟩|²…',
   'Generating AI executive summary…',
   'Building infrastructure health model…',
 ];
@@ -18,10 +18,10 @@ const SSH_STEPS = [
 const DEMO_STEPS = [
   'Initialising demo environment…',
   'Loading SSH intrusion scenario…',
-  'Generating realistic feature vectors…',
-  'Running quantum novelty computation…',
-  'Encoding behavioral state…',
-  'Computing F_min…',
+  'Generating 19-dim behavioral feature vectors…',
+  'Running BehavioralAE: 19→8-dim latent…',
+  'Encoding latent via 3-qubit AmplitudeEmbedding…',
+  'Computing V3 quantum confidence (swap·dir·coherence)…',
   'Building findings model…',
 ];
 
@@ -297,7 +297,7 @@ function FminCard({ fmin, novelty, divergePct }) {
   const bucket = fminBucket(fmin);
   return (
     <div className="card" style={{ padding: '14px 16px' }}>
-      <div className="metric-label">Quantum F_min</div>
+      <div className="metric-label">Quantum SWAP Fidelity (F_sub)</div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginTop: 6 }}>
         <span style={{ fontSize: 32, fontWeight: 700, fontFamily: 'monospace', color }}>
           {fmin != null ? fmin.toFixed(4) : '—'}
@@ -348,7 +348,7 @@ function QuantumSection({ qr, fmin, novelty, divergePct }) {
         <div>
           <div className="section-title" style={{ marginBottom: 2 }}>Quantum Behavioral Analysis</div>
           <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>
-            F = |⟨ψ_t|ψ_m⟩|² · 4-qubit angle encoding · parameter-free threshold 0.5
+            V3 fusion: α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir) · 3-qubit AmplitudeEmbedding · threshold 0.1854 (p95)
           </div>
         </div>
         <button className="btn" style={{ fontSize: 11, padding: '4px 12px' }}
@@ -405,13 +405,17 @@ function QuantumSection({ qr, fmin, novelty, divergePct }) {
         <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
           <div style={{ fontSize: 11, lineHeight: 2, fontFamily: 'monospace',
             background: 'var(--bg-raised)', borderRadius: 6, padding: 12, marginBottom: 12 }}>
-            <div><span style={{ color: 'var(--accent)' }}>F_min</span> = <span style={{ color: 'var(--blue)' }}>|⟨ψ_t|ψ_m⟩|²</span></div>
-            <div style={{ color: 'var(--text-faint)', fontSize: 10, marginTop: 2 }}>ψ_t — current behavioral state (angle-encoded into Hilbert space)</div>
-            <div style={{ color: 'var(--text-faint)', fontSize: 10 }}>ψ_m — minimum-fidelity state across quantum memory basis</div>
-            <div style={{ color: 'var(--text-faint)', fontSize: 10 }}>Threshold 0.5 = geometric midpoint of Hilbert space (not tuned)</div>
+            <div><span style={{ color: 'var(--accent)' }}>z_t</span> = <span style={{ color: 'var(--blue)' }}>BehavioralAE(x_t)</span> <span style={{ color: 'var(--text-faint)', fontSize: 9 }}>  ← 19-dim features → 8-dim latent</span></div>
+            <div><span style={{ color: 'var(--accent)' }}>|ψ_t⟩</span> = <span style={{ color: 'var(--blue)' }}>AmplitudeEmbedding(z_t, wires=[0,1,2])</span> <span style={{ color: 'var(--text-faint)', fontSize: 9 }}>  ← 3-qubit</span></div>
+            <div><span style={{ color: 'var(--accent)' }}>F_sub</span> = <span style={{ color: 'var(--blue)' }}>Σ|⟨ψ_t|ψ_k⟩|²</span> <span style={{ color: 'var(--text-faint)', fontSize: 9 }}>  k=1..K=3 PCA components · swap_s = 1−F_sub</span></div>
+            <div><span style={{ color: 'var(--accent)' }}>q_dir</span> = <span style={{ color: 'var(--blue)' }}>Σ|⟨ψ_t|ψ_c⟩|²</span> <span style={{ color: 'var(--text-faint)', fontSize: 9 }}>  complement dims K+1,K+2</span></div>
+            <div><span style={{ color: 'var(--accent)' }}>coh</span> = <span style={{ color: 'var(--blue)' }}>|mean(exp(i·φ_t))|</span> <span style={{ color: 'var(--text-faint)', fontSize: 9 }}>  φ=arctan2 in complement · W=4 windows</span></div>
+            <div><span style={{ color: 'var(--accent)' }}>conf</span> = <span style={{ color: 'var(--blue)' }}>α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir)</span></div>
+            <div style={{ color: 'var(--text-faint)', fontSize: 10 }}>α=0.263, β=0.285, γ=0.451 · Alert when conf &gt; 0.1854 (p95 of normal training)</div>
+            <div style={{ color: 'var(--text-faint)', fontSize: 10 }}>Validated: Prec=0.689, Rec=0.942, F1=0.796, AUC=0.980 (CERT r4.2 insider threat)</div>
             {fmin != null && (
               <div style={{ marginTop: 8, color }}>
-                F = {fmin.toFixed(4)} → {divergePct}% divergence from secure baseline
+                F_sub = {fmin.toFixed(4)} · {divergePct}% outside normal subspace
               </div>
             )}
           </div>

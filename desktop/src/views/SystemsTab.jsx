@@ -626,7 +626,25 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
 
   const qr          = data?.quantum_risk || {};
   const nov         = data?.novelty || {};
+  const basisSize   = nov.basis_size ?? 0;
+  const basisMature = basisSize >= 3;
+  // Always show live F_min — suppress anomaly ALERTS during calibration but always display the value
   const fmin        = nov.f_min ?? data?.f_min ?? qr.f_min ?? data?.latest_f_min;
+  // V3 validated quantum signals (swap fidelity, directionality, phase coherence, quantum confidence)
+  const swapFidelity    = nov.swap_fidelity    ?? null;
+  const qDirectionality = nov.q_directionality ?? null;
+  const phaseCoherence  = nov.phase_coherence  ?? null;
+  const quantumConf     = nov.quantum_confidence ?? null;
+  const qcColor = quantumConf == null ? 'var(--text-faint)'
+    : quantumConf >= 0.75 ? '#e94560'
+    : quantumConf >= 0.45 ? '#f5a623'
+    : quantumConf >= 0.1854 ? '#4a9eff'
+    : '#22cc66';
+  const qcLabel = quantumConf == null ? '—'
+    : quantumConf >= 0.75 ? 'CRITICAL'
+    : quantumConf >= 0.45 ? 'HIGH'
+    : quantumConf >= 0.1854 ? 'MEDIUM'
+    : 'LOW';
   // feature_vector from /api/status has real live values (cpu_usage, memory_usage, etc.)
   const fv          = data?.feature_vector || {};
   const hasFvData   = Object.values(fv).some(v => v !== 0 && v != null);
@@ -635,7 +653,8 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
   const critCount   = summary.critical ?? 0;
   const highCount   = summary.high     ?? 0;
   const medCount    = summary.medium   ?? 0;
-  const hasAlert    = data?._alerts?.has_anomaly ?? (fmin != null && fmin < 0.5);
+  // Only count as a real alert if basis is mature — calibration noise is not an alert
+  const hasAlert    = basisMature && (data?._alerts?.has_anomaly ?? (fmin != null && fmin < 0.5));
   // Last collection time: parse from agent_status recent_logs if available
   const recentLogLine = (() => {
     const logs = data?.agent_status?.recent_logs || '';
@@ -763,80 +782,108 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
           </div>
         </div>
 
-        {/* F_min live sparkline or CPU live chart */}
+        {/* Quantum signals — SWAP fidelity, directionality, phase coherence, quantum confidence */}
         <div className="card" style={{ padding: '16px 18px' }}>
-          {fmin != null ? (
-            <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontWeight: 700, fontSize: 13 }}>Quantum Fidelity F_min — Live</span>
-                    <Tooltip tip="F_min = |⟨ψ_t|ψ_m⟩|² — the overlap between the current 4-qubit quantum state |ψ_t⟩ and the trained baseline state |ψ_m⟩. Range 0–1. Values below 0.5 (dashed orange line) trigger anomaly alerts. Computed from the 17 behavioral features via angle encoding: θᵢ = π·fᵢ.">
-                      <span style={{ width: 15, height: 15, borderRadius: '50%', background: 'var(--bg-raised)', border: '1px solid var(--border)', fontSize: 9, color: 'var(--text-faint)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'help' }}>?</span>
-                    </Tooltip>
-                  </div>
-                  <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 2 }}>Dashed line = 0.5 alert threshold</div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'monospace', color: fminColor(fmin) }}>{fmin.toFixed(4)}</div>
-                  <div style={{ fontSize: 10, color: fminColor(fmin) }}>{fminBucket(fmin)}</div>
-                </div>
-              </div>
-              <Sparkline points={fHistory} color={fminColor(fmin)} height={60} />
-              {fHistory.length > 1 && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 9, color: 'var(--text-faint)' }}>
-                  <span>{fHistory[0]?.t}</span><span>→ now</span>
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontWeight: 700, fontSize: 13 }}>CPU Usage — Live</span>
-                  </div>
-                  <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 2 }}>
-                    Quantum F_min available after{' '}
-                    <span style={{ color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline' }}>Train</span>
-                    {' '}tab runs baseline
-                  </div>
-                </div>
-                {fv.cpu_usage != null && fv.cpu_usage !== 0 && (
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'monospace', color: '#4a9eff' }}>{fv.cpu_usage.toFixed(1)}%</div>
-                    <div style={{ fontSize: 10, color: 'var(--text-faint)' }}>CPU</div>
-                  </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontWeight: 700, fontSize: 13 }}>Quantum Behavioral Analysis — Live</span>
+                <Tooltip tip="3-qubit AmplitudeEmbedding on 8-dim behavioral latent z_t. SWAP Fidelity = F_sub = Σ|⟨ψ_t|ψ_k⟩|² over K=3 PCA subspace components. Low fidelity = outside normal subspace = anomalous. Directionality = alignment with complement subspace. Phase Coherence = |mean(exp(iφ))| over W=4 windows. Quantum Confidence = V3 interference fusion: α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir). Threshold = 0.1854 (p95 of normal training). NIST FIPS 203 ML-KEM Kyber768 PQC transform applied before encoding — behavioral norm cannot be reverse-engineered or replayed without private key.">
+                  <span style={{ width: 15, height: 15, borderRadius: '50%', background: 'var(--bg-raised)', border: '1px solid var(--border)', fontSize: 9, color: 'var(--text-faint)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'help' }}>?</span>
+                </Tooltip>
+                {!basisMature && (
+                  <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: 'var(--blue)18', border: '1px solid var(--blue)44', color: 'var(--blue)', fontWeight: 600 }}>
+                    {basisSize > 0 ? `BASELINE ${basisSize}/3` : 'TRAIN NEEDED'}
+                  </span>
                 )}
               </div>
-              {cpuHistory.length > 1
-                ? <Sparkline points={cpuHistory} color="#4a9eff" height={60} />
-                : hasFvData
-                  ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      {[
-                        { label: 'CPU', val: fv.cpu_usage, unit: '%', color: '#4a9eff' },
-                        { label: 'Memory', val: fv.memory_usage, unit: '%', color: '#22cc66' },
-                        { label: 'Disk', val: fv.disk_usage, unit: '%', color: '#f5a623' },
-                      ].filter(r => r.val != null && r.val !== 0).map(r => (
-                        <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ fontSize: 10, color: 'var(--text-faint)', width: 50 }}>{r.label}</span>
-                          <div style={{ flex: 1, height: 6, background: 'var(--bg-input)', borderRadius: 3, overflow: 'hidden' }}>
-                            <div style={{ height: '100%', width: `${Math.min(r.val, 100)}%`, background: r.color, borderRadius: 3 }} />
-                          </div>
-                          <span style={{ fontSize: 11, fontFamily: 'monospace', color: r.color, width: 40, textAlign: 'right' }}>{r.val.toFixed(1)}{r.unit}</span>
-                        </div>
-                      ))}
+              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 2 }}>
+                {basisMature ? 'Alert threshold: quantum confidence > 0.1854 (v3 p95)' : basisSize > 0 ? `Subspace building (${basisSize}/3) — alerts suppressed` : 'Go to Train tab to build behavioral baseline'}
+              </div>
+            </div>
+            {quantumConf != null ? (
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'monospace', color: basisMature ? qcColor : 'var(--text-faint)' }}>{quantumConf.toFixed(4)}</div>
+                <div style={{ fontSize: 10, color: basisMature ? qcColor : 'var(--text-faint)' }}>{basisMature ? qcLabel : (basisSize > 0 ? 'building baseline…' : 'train tab needed')}</div>
+              </div>
+            ) : fmin != null ? (
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'monospace', color: basisMature ? fminColor(fmin) : 'var(--text-faint)' }}>{fmin.toFixed(4)}</div>
+                <div style={{ fontSize: 10, color: basisMature ? fminColor(fmin) : 'var(--text-faint)' }}>{basisMature ? fminBucket(fmin) : ''}</div>
+              </div>
+            ) : (
+              <div style={{ textAlign: 'right', fontSize: 11, color: 'var(--text-faint)' }}>Waiting…</div>
+            )}
+          </div>
+
+          {/* 4 quantum signal tiles — show whenever values exist, even during calibration */}
+          {(swapFidelity != null || qDirectionality != null || phaseCoherence != null || quantumConf != null) && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 12 }}>
+              {[
+                {
+                  label: 'SWAP Fidelity',
+                  key: 'F_sub',
+                  val: swapFidelity,
+                  tip: 'F_sub = Σ|⟨ψ_t|ψ_k⟩|² — overlap with normal subspace (K=3 PCA). High = inside normal. Low = outside = anomalous. swap_s = 1 − F_sub is the anomaly signal.',
+                  color: swapFidelity == null ? 'var(--text-faint)' : swapFidelity >= 0.7 ? '#22cc66' : swapFidelity >= 0.5 ? '#4a9eff' : swapFidelity >= 0.3 ? '#f5a623' : '#e94560',
+                  fmt: v => v.toFixed(4),
+                },
+                {
+                  label: 'Directionality',
+                  key: 'q_dir',
+                  val: qDirectionality,
+                  tip: 'q_dir = Σ|⟨ψ_t|ψ_c⟩|² — alignment with complement subspace (dimensions K+1, K+2). High = drifting into complement = correlated with attack drift. Orthogonal to SWAP (corr≈0.024).',
+                  color: qDirectionality == null ? 'var(--text-faint)' : qDirectionality >= 0.3 ? '#e94560' : qDirectionality >= 0.15 ? '#f5a623' : '#22cc66',
+                  fmt: v => v.toFixed(4),
+                },
+                {
+                  label: 'Phase Coherence',
+                  key: 'coh',
+                  val: phaseCoherence,
+                  tip: 'coh = |mean(exp(iφ_t))| over W=4 windows. φ_t = arctan2 angle in complement subspace. High coherence + high directionality = sustained attack drift vs. noise. Normal baseline ≈ 0.624.',
+                  color: phaseCoherence == null ? 'var(--text-faint)' : phaseCoherence >= 0.8 ? '#e94560' : phaseCoherence >= 0.6 ? '#f5a623' : '#22cc66',
+                  fmt: v => v.toFixed(4),
+                },
+                {
+                  label: 'Q Confidence',
+                  key: 'qc',
+                  val: quantumConf,
+                  tip: 'V3 interference fusion: conf = α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir). Global weights: α=0.263, β=0.285, γ=0.451. Per-identity LR-fit when basis matures. Alert threshold = 0.1854 (p95 of normal training). Prec=0.689, Rec=0.942, F1=0.796, AUC=0.980 on CERT r4.2.',
+                  color: qcColor,
+                  fmt: v => v.toFixed(4),
+                },
+              ].map(s => (
+                <Tooltip key={s.key} tip={s.tip}>
+                  <div style={{
+                    background: 'var(--bg-raised)', borderRadius: 8, padding: '10px 12px',
+                    border: `1px solid ${s.color}33`, cursor: 'help',
+                  }}>
+                    <div style={{ fontSize: 9, color: 'var(--text-faint)', fontFamily: 'monospace', marginBottom: 4 }}>{s.key}</div>
+                    <div style={{ fontSize: 17, fontWeight: 700, fontFamily: 'monospace', color: s.color }}>
+                      {s.val != null ? s.fmt(s.val) : '—'}
                     </div>
-                  )
-                  : <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: 'var(--text-faint)' }}>Collecting first sample…</div>
-              }
-              {cpuHistory.length > 1 && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 9, color: 'var(--text-faint)' }}>
-                  <span>{cpuHistory[0]?.t}</span><span>→ now</span>
-                </div>
-              )}
-            </>
+                    <div style={{ fontSize: 9, color: s.color, marginTop: 2 }}>{s.label}</div>
+                    {s.val != null && (
+                      <div style={{ marginTop: 6, height: 3, background: 'var(--bg-input)', borderRadius: 2 }}>
+                        <div style={{ height: '100%', width: `${Math.min(s.val, 1) * 100}%`, background: s.color, borderRadius: 2, transition: 'width 0.5s' }} />
+                      </div>
+                    )}
+                  </div>
+                </Tooltip>
+              ))}
+            </div>
+          )}
+
+          {fmin != null && fHistory.length > 1
+            ? <Sparkline points={fHistory} color={basisMature ? (quantumConf != null ? qcColor : fminColor(fmin)) : 'var(--blue)'} height={60} />
+            : <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: 'var(--text-faint)' }}>
+                {hasFvData ? 'Building signal history…' : 'Collecting first sample…'}
+              </div>
+          }
+          {fHistory.length > 1 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 9, color: 'var(--text-faint)' }}>
+              <span>{fHistory[0]?.t}</span><span>→ now</span>
+            </div>
           )}
         </div>
       </div>
@@ -850,11 +897,11 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
         <MetricTileWithTip label="Medium" value={medCount} color={medCount > 3 ? 'var(--blue)' : 'var(--text-faint)'}
           tip="Count of MEDIUM severity findings. Often best-practice violations or indirect risk. Each deducts 2 from health score." />
         <MetricTileWithTip label="Anomaly Alert" value={hasAlert ? 'ACTIVE' : 'None'} color={hasAlert ? 'var(--red)' : 'var(--green)'}
-          tip="Fires when F_min drops below 0.5 AND IsolationForest anomaly score turns negative — meaning both the quantum state and the classical model agree that behavior has deviated from baseline." />
+          tip="Fires when quantum confidence exceeds 0.1854 (v3 p95 threshold on normal training windows). Formula: α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir). If Isolation Forest is also trained, both must agree. Detects T1078 Valid-Account credential theft — attackers who pass authentication but deviate from behavioral baseline." />
         <div className="card" style={{ padding: '14px 16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
             <div className="metric-label" style={{ margin: 0 }}>TaaraWare</div>
-            <Tooltip tip="TaaraWare is TAARA's persistent monitoring agent deployed on the target server. When active, it collects the 17-feature behavioral DNA every 30 seconds and streams it back for quantum analysis.">
+            <Tooltip tip="TaaraWare is TAARA's persistent monitoring agent deployed on the target server. When active, it collects the 19-feature behavioral DNA every 30 seconds and streams it back for quantum analysis.">
               <span style={{ width: 14, height: 14, borderRadius: '50%', background: 'var(--bg-raised)', border: '1px solid var(--border)', fontSize: 9, color: 'var(--text-faint)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'help' }}>?</span>
             </Tooltip>
           </div>
@@ -958,7 +1005,7 @@ const SSH_STEPS = [
   'Analysing authentication logs…',
   'Checking sudo & privilege escalation…',
   'Running knowledge-base policy scan…',
-  'Encoding feature vector (4-qubit angle encoding)…',
+  'Encoding 8-dim latent → 3-qubit AmplitudeEmbedding…',
   'Computing quantum fidelity F = |⟨ψ_t|ψ_m⟩|²…',
   'Generating Reasoning Engine executive summary…',
   'Building infrastructure health model…',
@@ -1116,7 +1163,7 @@ function AnalysisResults({ results, hostname }) {
           color={riskScore >= 75 ? 'var(--red)' : riskScore >= 50 ? 'var(--amber)' : riskScore >= 25 ? 'var(--blue)' : 'var(--green)'}
           tip="Aggregated risk from the knowledge-base policy scan. Computed as a weighted sum of finding severities against OWASP/CIS/SSH policy rules. Higher = more risk. This is independent of F_min." />
         <MetricTileWithTip label="F_min" value={fmin != null ? fmin.toFixed(4) : '—'} color={fminColor(fmin)} mono
-          tip={`Quantum Fidelity — F = |⟨ψ_t|ψ_m⟩|². Measures overlap between the current 4-qubit state |ψ_t⟩ (from this scan's features) and trained baseline |ψ_m⟩. Range 0–1. Below 0.5 = anomalous direction. Current divergence: ${divergePct != null ? divergePct + '%' : 'unknown'}.`} />
+          tip={`Quantum Confidence — V3 fusion: α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir). 3-qubit AmplitudeEmbedding on 8-dim latent. Threshold 0.1854. Current divergence: ${divergePct != null ? divergePct + '%' : 'unknown'}.`} />
         <MetricTileWithTip label="Findings" value={findings.length}
           color={critCount > 0 ? 'var(--red)' : highCount > 0 ? 'var(--amber)' : 'var(--green)'}
           sub={`${critCount}C · ${highCount}H · ${medCount}M · ${lowCount}L`}
@@ -1143,15 +1190,15 @@ function AnalysisResults({ results, hostname }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                 <span style={{ fontWeight: 700, fontSize: 13, color: fminColor(fmin) }}>{fminBucket(fmin)}</span>
                 <span style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--text-faint)' }}>F = {fmin.toFixed(4)}</span>
-                <Tooltip tip="F_min = |⟨ψ_t|ψ_m⟩|² — computed from the 4-qubit angle-encoded quantum states. |ψ_t⟩ is the current behavioral state; |ψ_m⟩ is the trained baseline. The formula gives the squared inner product (fidelity) between two quantum states on the Bloch sphere.">
+                <Tooltip tip="Quantum Confidence — V3 fusion of SWAP Fidelity, Directionality, and Phase Coherence on a 3-qubit AmplitudeEmbedding of the 8-dim BehavioralAE latent. Threshold 0.1854 (p95 of normal training). Alert = conf > 0.1854.">
                   <span style={{ width: 14, height: 14, borderRadius: '50%', background: 'var(--bg-raised)', border: '1px solid var(--border)', fontSize: 9, color: 'var(--text-faint)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'help' }}>?</span>
                 </Tooltip>
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.6 }}>
                 The server's current behavior is <strong style={{ color: fminColor(fmin) }}>{divergePct}% diverged</strong> from its trained secure baseline.
                 {fmin >= 0.7 && ' This is within the normal operating range.'}
-                {fmin >= 0.5 && fmin < 0.7 && ' Behavioral drift is present but has not yet crossed the anomaly threshold of 0.5.'}
-                {fmin < 0.5 && ' This is below the alert threshold (0.5). The server is behaving significantly differently from its trained baseline.'}
+                {fmin >= 0.1854 && fmin < 0.45 && ' Behavioral drift detected — V3 quantum confidence above calibration threshold (0.1854).'}
+                {fmin >= 0.45 && ' High quantum confidence. The server is behaving significantly differently from its trained baseline.'}
               </div>
               {/* Zone bar */}
               <div style={{ marginTop: 8, height: 8, background: 'linear-gradient(90deg, #e94560 0%, #f5a623 30%, #4a9eff 55%, #22cc66 100%)', borderRadius: 4, position: 'relative' }}>
@@ -1419,7 +1466,7 @@ function TaaraWareDeployPanel({ hostname, demoMode, onDeployed }) {
   );
 }
 
-// All 17 feature vectors with their descriptions and input variable names
+// All 19 feature vectors with their descriptions and input variable names
 const FEATURE_META = [
   { key: 'cpu_usage',                 label: 'CPU Usage',              unit: '%',   input: 'cpu_percent',       desc: 'Average CPU utilisation across all cores. High sustained values (>80%) can indicate crypto-mining, runaway processes, or active exploitation.' },
   { key: 'memory_usage',              label: 'Memory Usage',           unit: '%',   input: 'mem_percent',       desc: 'RAM utilisation (psutil.virtual_memory.percent). Steady growth without matching workload is a memory-leak or exfiltration buffer indicator.' },
@@ -1438,6 +1485,8 @@ const FEATURE_META = [
   { key: 'privilege_escalations',     label: 'Privilege Escalations',  unit: '',    input: 'priv_esc',          desc: 'sudo/su events from auth.log in past hour. Non-zero in off-hours is a critical signal for unauthorized access.' },
   { key: 'temporal_rhythm_deviation', label: 'Temporal Rhythm Dev.',   unit: '',    input: 'rhythm_dev',        desc: 'Deviation from the trained timing pattern of process launches (AtomicDNACollector). Attackers break normal rhythms.' },
   { key: 'causal_chain_novelty',      label: 'Causal Chain Novelty',   unit: '',    input: 'causal_novelty',    desc: 'How novel the parent→child process chains are vs. trained baseline. New chains = unknown execution paths = potential threat.' },
+  { key: 'concealment_signal',        label: 'Concealment Signal',     unit: '',    input: 'concealment_sig',   desc: 'Composite signal: hidden file ratio, exec from /tmp, suspicious user-agent patterns. Non-zero means something is actively hiding.' },
+  { key: 'proc_cmd_novelty',          label: 'Cmd Novelty',            unit: '',    input: 'cmd_novelty',       desc: 'Fraction of process command lines not seen during normal training. Novel commands in production indicate new code execution — a key indicator for T1078.' },
 ];
 
 // ── Pipeline step visual component ────────────────────────────────────────────
@@ -1463,7 +1512,22 @@ function FeatureMappingModal({ fv, onClose }) {
   const [unlocked, setUnlocked] = useState(false);
   const [err, setErr]           = useState('');
   const [tab, setTab]           = useState('pipeline'); // pipeline | features | categories
+  const [alertTriggering, setAlertTriggering] = useState(false);
+  const [alertResult, setAlertResult]         = useState('');
   const DEMO_PWD                = 'taara2026';
+
+  async function triggerDemoAlert() {
+    setAlertTriggering(true);
+    setAlertResult('');
+    try {
+      const r = await api.triggerTestAlert();
+      setAlertResult(r.ok ? '✓ Alert injected — check the dashboard' : '✗ ' + (r.data?.detail || 'Failed'));
+    } catch (e) {
+      setAlertResult('✗ ' + e.message);
+    } finally {
+      setAlertTriggering(false);
+    }
+  }
 
   function tryUnlock() {
     if (pwd === DEMO_PWD) { setUnlocked(true); setErr(''); }
@@ -1479,16 +1543,16 @@ function FeatureMappingModal({ fv, onClose }) {
   ];
 
   const PIPELINE_STEPS = [
-    { num: '①', title: 'Raw Collection', subtitle: '17 signals', detail: 'psutil + auth.log', color: '#4a9eff',
-      explain: 'TaaraWare agent reads 17 live signals from the server every 30 seconds — CPU, memory, disk, network counters, process list, login logs, and timing patterns. These are the raw numbers that describe what the server is doing right now.' },
+    { num: '①', title: 'Raw Collection', subtitle: '19 signals', detail: 'psutil + auth.log', color: '#4a9eff',
+      explain: 'TaaraWare agent reads 19 live signals from the server every 30 seconds — CPU, memory, disk, network counters, process list, login logs, timing patterns, and 2 advanced behavioural signals (temporal rhythm deviation, causal chain novelty). These are the raw numbers that describe what the server is doing right now.' },
     { num: '②', title: 'Normalise', subtitle: 'MinMaxScaler', detail: 'x̂ = (x−min)/(max−min)', color: '#9b7dff',
       explain: 'Each raw value is scaled to [0, 1] using the min/max ranges learned during training. This means CPU 45% and network 2 MB/s are on the same scale — the model can compare apples to apples. The scaler is saved in models/dna_scaler.json.' },
-    { num: '③', title: 'Autoencoder', subtitle: '17→4→17', detail: 'bottleneck compress', color: '#f5a623',
-      explain: 'A neural network (17→8→4→8→17 architecture) compresses the 17 numbers down to a 4-dimensional "behavioural fingerprint". The network learned what normal server behaviour looks like during training. If the current state doesn\'t compress and reconstruct well, it\'s a sign something unusual is happening.' },
-    { num: '④', title: 'Qubit Encoding', subtitle: '4 qubits', detail: 'θᵢ = π·fᵢ → RY gate', color: '#22cc66',
-      explain: 'The 4 compressed values are encoded into 4 qubits using angle encoding. Each value fᵢ rotates a qubit by angle θᵢ = π·fᵢ through an RY gate. This creates a quantum state |ψ_t⟩ that represents the server\'s current behaviour as a point on the Bloch sphere.' },
-    { num: '⑤', title: 'Fidelity F_min', subtitle: '|⟨ψ_t|ψ_m⟩|²', detail: 'threshold: 0.5', color: '#e94560',
-      explain: 'Fidelity measures how similar the current quantum state |ψ_t⟩ is to the trained baseline state |ψ_m⟩. F = 1.0 means identical — perfectly normal. F < 0.5 means the server has drifted far from its learned baseline, which triggers an alert. This is the core of TAARA\'s quantum anomaly detection.' },
+    { num: '③', title: 'Autoencoder', subtitle: '19→8→19', detail: 'bottleneck compress', color: '#f5a623',
+      explain: 'A deep neural network (19→64→8→64→19 architecture, Tanh bottleneck) compresses the 19 signals down to an 8-dimensional "behavioural DNA fingerprint". The network learned what normal server behaviour looks like during training. If the current state doesn\'t compress and reconstruct well, it\'s a sign something unusual is happening.' },
+    { num: '④', title: 'Qubit Encoding', subtitle: '3 qubits', detail: 'AmplitudeEmbedding (8→3q)', color: '#22cc66',
+      explain: 'The 8-dimensional latent vector is encoded into 3 qubits using PennyLane AmplitudeEmbedding (2³=8). This maps the full behavioural fingerprint into a quantum state |ψ_t⟩ that captures complex correlations between all 8 dimensions simultaneously — something classical vectors cannot express.' },
+    { num: '⑤', title: 'V3 Fusion', subtitle: 'SWAP+Dir+Coh', detail: 'threshold: 0.1854', color: '#e94560',
+      explain: 'Three quantum signals are fused: SWAP Fidelity (similarity to normal subspace), Directionality (deviation angle), and Phase Coherence (temporal stability). The V3 formula conf = α·swap + β·dir + γ·coh·√(swap·dir) weights them optimally. Threshold of 0.1854 (p95 of training distribution) determines alert vs. normal.' },
     { num: '⑥', title: 'PQC Protect', subtitle: 'Kyber768', detail: 'NIST FIPS 203', color: '#4a9eff',
       explain: 'Before the feature vector is sent from the agent to the TAARA server, it is offset using a Kyber768 (ML-KEM) shared secret. Kyber768 is post-quantum — even a future quantum computer cannot break it. This protects the behavioral data from interception in transit.' },
   ];
@@ -1508,7 +1572,7 @@ function FeatureMappingModal({ fv, onClose }) {
           <div>
             <div style={{ fontWeight: 700, fontSize: 18 }}>How TAARA Analyses Your Server</div>
             <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 4 }}>
-              From 17 raw signals to a quantum anomaly verdict — every step explained
+              From 19 raw signals to a quantum anomaly verdict — every step explained
             </div>
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 22, lineHeight: 1 }}>✕</button>
@@ -1532,7 +1596,6 @@ function FeatureMappingModal({ fv, onClose }) {
               <button className="btn btn-primary" onClick={tryUnlock}>Unlock</button>
             </div>
             {err && <div style={{ fontSize: 12, color: 'var(--red)' }}>{err}</div>}
-            <div style={{ fontSize: 10, color: 'var(--text-faint)' }}>Demo password: taara2026</div>
           </div>
         ) : (
           <>
@@ -1599,6 +1662,23 @@ function FeatureMappingModal({ fv, onClose }) {
                       </div>
                     ))}
                   </div>
+
+                  {/* Demo alert trigger */}
+                  <div style={{ marginTop: 20, padding: '14px 18px', borderRadius: 8, background: 'rgba(233,69,96,0.06)', border: '1px solid rgba(233,69,96,0.2)' }}>
+                    <div style={{ fontWeight: 700, fontSize: 12, color: '#e94560', marginBottom: 6 }}>⚡ Live Demo — Inject T1078 Alert</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10 }}>
+                      Injects a synthetic credential-theft anomaly into the live monitoring stream. V3 quantum confidence will spike above 0.1854 and an alert banner will fire on the dashboard — showing judges the full detection pipeline in real time.
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <button
+                        onClick={triggerDemoAlert}
+                        disabled={alertTriggering}
+                        style={{ padding: '7px 18px', borderRadius: 6, border: '1px solid rgba(233,69,96,0.5)', background: 'rgba(233,69,96,0.12)', color: '#e94560', fontWeight: 700, fontSize: 12, cursor: alertTriggering ? 'not-allowed' : 'pointer' }}>
+                        {alertTriggering ? 'Injecting…' : '⚡ Trigger Alert Demo'}
+                      </button>
+                      {alertResult && <span style={{ fontSize: 11, color: alertResult.startsWith('✓') ? '#22cc66' : '#e94560' }}>{alertResult}</span>}
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -1635,34 +1715,30 @@ function FeatureMappingModal({ fv, onClose }) {
                     })}
                   </div>
 
-                  {/* Fidelity diagram */}
-                  {fv.anomaly_score != null && (
+                  {/* Classical signal breakdown */}
+                  {(fv.anomaly_score != null || fv.recon_error != null || fv.latent_fidelity != null) && (
                     <div style={{ marginTop: 20, padding: '14px 16px', background: 'var(--bg-raised)', borderRadius: 8, border: '1px solid var(--border)' }}>
-                      <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 10 }}>Quantum Verdict</div>
-                      <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
-                        <div style={{ textAlign: 'center' }}>
-                          <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4 }}>Anomaly Score</div>
-                          <div style={{ fontSize: 28, fontWeight: 700, fontFamily: 'monospace', color: fv.is_anomaly ? 'var(--red)' : 'var(--green)' }}>
-                            {fv.anomaly_score.toFixed(4)}
-                          </div>
-                          <div style={{ fontSize: 10, color: 'var(--text-faint)' }}>IsolationForest output</div>
-                        </div>
-                        <div style={{ flex: 1, minWidth: 180 }}>
-                          <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.7 }}>
-                            The IsolationForest assigns an anomaly score where <span style={{ fontFamily: 'monospace', color: 'var(--green)' }}>positive = normal</span>,{' '}
-                            <span style={{ fontFamily: 'monospace', color: 'var(--red)' }}>negative = anomalous</span>.
-                            Combined with quantum fidelity F_min, TAARA requires both signals to agree before raising an alert — reducing false positives.
-                          </div>
-                        </div>
-                        <div style={{
-                          width: 64, height: 64, borderRadius: '50%',
-                          background: fv.is_anomaly ? 'rgba(233,69,96,0.15)' : 'rgba(34,204,102,0.15)',
-                          border: `3px solid ${fv.is_anomaly ? 'var(--red)' : 'var(--green)'}`,
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: 26, flexShrink: 0,
-                        }}>
-                          {fv.is_anomaly ? '⚠' : '✓'}
-                        </div>
+                      <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 10 }}>Classical Ensemble — 3 Signals</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 10 }}>
+                        {[
+                          { label: 'Reconstruction Error', value: fv.recon_error, threshold: 0.05, bad: v => v > 0.05, fmt: v => v.toFixed(4), sub: '> 0.05 = anomaly' },
+                          { label: 'Latent Fidelity', value: fv.latent_fidelity, bad: v => v < 0.6, fmt: v => v.toFixed(4), sub: '< 0.6 = direction anomaly' },
+                          { label: 'IF Score', value: fv.anomaly_score, bad: v => v < 0, fmt: v => v.toFixed(4), sub: '< 0 = statistical outlier' },
+                        ].map(s => {
+                          const isAnomaly = s.value != null && s.bad(s.value);
+                          const color = s.value == null ? 'var(--text-faint)' : isAnomaly ? 'var(--red)' : 'var(--green)';
+                          return (
+                            <div key={s.label} style={{ background: 'var(--bg-surface)', borderRadius: 6, padding: '8px 10px', border: `1px solid ${s.value != null && isAnomaly ? 'rgba(233,69,96,0.3)' : 'var(--border)'}` }}>
+                              <div style={{ fontSize: 9, color: 'var(--text-faint)', marginBottom: 3 }}>{s.label}</div>
+                              <div style={{ fontSize: 14, fontWeight: 700, fontFamily: 'monospace', color }}>{s.value != null ? s.fmt(s.value) : '—'}</div>
+                              <div style={{ fontSize: 9, color: 'var(--text-faint)', marginTop: 2 }}>{s.sub}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                        All three must flag simultaneously for a <strong style={{ color: '#f5a623' }}>dual-confirmed alert (orange)</strong>.
+                        Quantum F_min alone triggers a <strong style={{ color: '#e94560' }}>quantum alert (red)</strong>.
                       </div>
                     </div>
                   )}
@@ -1752,7 +1828,25 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
   const agentStatus = status?.agent_status || {};
   const fv   = status?.feature_vector || {};
   const nov  = status?.novelty || {};
-  const fmin = nov.f_min ?? status?.f_min;
+  const basisSize = nov.basis_size ?? 0;
+  const basisMature = basisSize >= 3;
+  const rawFmin = nov.f_min ?? status?.f_min;
+  const fmin = rawFmin ?? null;
+  // Always show live V3 quantum signals — suppress alerts (not display) when basis not mature
+  const twSwapFidelity    = nov.swap_fidelity    ?? null;
+  const twQDirectionality = nov.q_directionality ?? null;
+  const twPhaseCoherence  = nov.phase_coherence  ?? null;
+  const twQuantumConf     = nov.quantum_confidence ?? null;
+  const twQcColor = twQuantumConf == null ? 'var(--text-faint)'
+    : twQuantumConf >= 0.75 ? '#e94560'
+    : twQuantumConf >= 0.45 ? '#f5a623'
+    : twQuantumConf >= 0.1854 ? '#4a9eff'
+    : '#22cc66';
+  const twQcLabel = twQuantumConf == null ? '—'
+    : twQuantumConf >= 0.75 ? 'CRITICAL'
+    : twQuantumConf >= 0.45 ? 'HIGH'
+    : twQuantumConf >= 0.1854 ? 'MEDIUM'
+    : 'LOW';
   // all-zeros means not yet collected — only show as hasFv when at least one non-zero value
   const hasFv = Object.keys(fv).filter(k => !['anomaly_score','is_anomaly'].includes(k)).some(k => fv[k] !== 0 && fv[k] != null);
   // Pull last collection time from recent agent log line
@@ -1765,86 +1859,133 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
     <div className="page">
       {showMapping && <FeatureMappingModal fv={fv} onClose={() => setShowMapping(false)} />}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 14, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(155px, 1fr))', gap: 10, marginBottom: 20 }}>
         <MetricTile label="Agent"
           value={agentStatus.status === 'active' ? 'LIVE' : demoMode ? 'DEMO' : (status ? 'CONNECTED' : 'CHECKING')}
           color={agentStatus.status === 'active' || demoMode ? 'var(--green)' : 'var(--text-faint)'} />
         <MetricTile label="Buffer"
           value={agentStatus.buffer_size != null ? `${agentStatus.buffer_size}` : '—'}
           color="var(--blue)" sub="samples stored" />
-        <MetricTile label="F_min"    value={fmin != null ? fmin.toFixed(4) : '—'} color={fminColor(fmin)} mono />
+        <MetricTile label="Q Confidence"
+          value={twQuantumConf != null ? twQuantumConf.toFixed(4) : '—'}
+          color={twQcColor} mono />
+        <MetricTile label="SWAP Fidelity"
+          value={twSwapFidelity != null ? twSwapFidelity.toFixed(4) : '—'}
+          color={twSwapFidelity == null ? 'var(--text-faint)' : twSwapFidelity >= 0.7 ? '#22cc66' : twSwapFidelity >= 0.5 ? '#4a9eff' : '#e94560'} mono />
+        <MetricTile label="Directionality"
+          value={twQDirectionality != null ? twQDirectionality.toFixed(4) : '—'}
+          color={twQDirectionality == null ? 'var(--text-faint)' : twQDirectionality >= 0.3 ? '#e94560' : twQDirectionality >= 0.15 ? '#f5a623' : '#22cc66'} mono />
+        <MetricTile label="Phase Coherence"
+          value={twPhaseCoherence != null ? twPhaseCoherence.toFixed(4) : '—'}
+          color={twPhaseCoherence == null ? 'var(--text-faint)' : twPhaseCoherence >= 0.8 ? '#e94560' : twPhaseCoherence >= 0.6 ? '#f5a623' : '#22cc66'} mono />
         <MetricTile label="Last Collection" value={lastTs} color="var(--text-dim)" />
       </div>
 
-      {fmin != null && (
+      {!basisMature && (
+        <div className="card" style={{ marginBottom: 16, borderLeft: `3px solid ${basisSize > 0 ? 'var(--blue)' : 'var(--amber)'}` }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: basisSize > 0 ? 'var(--blue)' : 'var(--amber)' }}>
+            {basisSize > 0 ? `Quantum Baseline Building — ${basisSize}/3 training samples` : 'No Baseline — Train tab required'}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.7, marginBottom: 10 }}>
+            {basisSize > 0
+              ? `The Train tab has collected ${basisSize} of 3 required normal-behavior samples. F_min and anomaly alerts activate once the baseline is complete.`
+              : 'The quantum memory basis is empty. Go to the Train tab and run training on this server to establish a normal behavioral baseline. Live monitoring will check incoming data against that baseline — it never modifies it.'}
+          </div>
+          {basisSize > 0 && (
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <div style={{ flex: 1, height: 6, borderRadius: 3, background: 'var(--bg-raised)', overflow: 'hidden' }}>
+                <div style={{ width: `${(basisSize / 3) * 100}%`, height: '100%', background: 'var(--blue)', borderRadius: 3, transition: 'width 0.4s' }} />
+              </div>
+              <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-faint)' }}>{basisSize}/3</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {basisMature && (twQuantumConf != null || fmin != null) && (
         <div className="card" style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            {/* Big fidelity dial */}
+            {/* Big quantum confidence dial */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 110 }}>
-              <div style={{
-                width: 100, height: 100, borderRadius: '50%',
-                background: `conic-gradient(${fminColor(fmin)} 0% ${fmin * 100}%, var(--bg-raised) ${fmin * 100}% 100%)`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                boxShadow: `0 0 16px ${fminColor(fmin)}44`,
-                border: `2px solid ${fminColor(fmin)}66`,
-                position: 'relative',
-              }}>
-                <div style={{
-                  width: 76, height: 76, borderRadius: '50%', background: 'var(--bg-surface)',
-                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  <div style={{ fontSize: 20, fontWeight: 700, fontFamily: 'monospace', color: fminColor(fmin) }}>
-                    {(fmin * 100).toFixed(0)}%
+              {(() => {
+                const dialVal = twQuantumConf ?? 0;
+                const dialColor = twQcColor !== 'var(--text-faint)' ? twQcColor : '#4a9eff';
+                return (
+                  <div style={{
+                    width: 100, height: 100, borderRadius: '50%',
+                    background: `conic-gradient(${dialColor} 0% ${dialVal * 100}%, var(--bg-raised) ${dialVal * 100}% 100%)`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    boxShadow: `0 0 16px ${dialColor}44`,
+                    border: `2px solid ${dialColor}66`,
+                    position: 'relative',
+                  }}>
+                    <div style={{
+                      width: 76, height: 76, borderRadius: '50%', background: 'var(--bg-surface)',
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                      <div style={{ fontSize: 16, fontWeight: 700, fontFamily: 'monospace', color: dialColor }}>
+                        {(dialVal * 100).toFixed(0)}%
+                      </div>
+                      <div style={{ fontSize: 8, color: 'var(--text-faint)' }}>Q-CONF</div>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 8, color: 'var(--text-faint)' }}>FIDELITY</div>
-                </div>
-              </div>
-              <div style={{ marginTop: 8, fontSize: 11, fontWeight: 700, color: fminColor(fmin) }}>{fminBucket(fmin)}</div>
+                );
+              })()}
+              <div style={{ marginTop: 8, fontSize: 11, fontWeight: 700, color: twQcColor }}>{twQcLabel}</div>
             </div>
 
-            {/* Explanation */}
+            {/* Explanation + signal breakdown */}
             <div style={{ flex: 1, minWidth: 200 }}>
-              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Quantum Behavioral Fidelity</div>
-              <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.7, marginBottom: 10 }}>
-                TAARA encodes this server's current behaviour as a 4-qubit quantum state |ψ_t⟩ and
-                measures how similar it is to the trained baseline state |ψ_m⟩.
-                The result is <span style={{ fontFamily: 'monospace', color: 'var(--text)' }}>F = |⟨ψ_t|ψ_m⟩|²</span>.
-                Think of it as: <em>if F = 1.0, the server is behaving exactly as trained; if F = 0.0, it's completely different.</em>
+              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Quantum Subspace Analysis</div>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: 10 }}>
+                TAARA projects the 8-dim behavioral latent onto a <strong>3-qubit quantum state |ψ_t⟩</strong> via
+                AmplitudeEmbedding, then measures subspace alignment. SWAP fidelity detects departure from the
+                trained normal subspace. Directionality + phase coherence detect <em>sustained drift</em> — the
+                signature of T1078 credential theft. Protected by ML-KEM Kyber768 (NIST FIPS 203) — the behavioral
+                norm cannot be reverse-engineered or replayed.
               </div>
-              {/* Threshold zones */}
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {/* Signal breakdown bars */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {[
-                  { range: '< 0.3', label: 'Critical Divergence', color: '#e94560' },
-                  { range: '0.3–0.5', label: 'Unsafe Direction', color: '#f5a623' },
-                  { range: '0.5–0.7', label: 'Drifting', color: '#4a9eff' },
-                  { range: '> 0.7', label: 'Normal', color: '#22cc66' },
-                ].map(z => (
-                  <div key={z.range} style={{
-                    padding: '3px 8px', borderRadius: 4, fontSize: 9, fontWeight: 600,
-                    background: `${z.color}18`, border: `1px solid ${z.color}44`, color: z.color,
-                    opacity: fmin >= parseFloat(z.range.replace('< ','').replace('> ','').split('–')[0]) || z.range.startsWith('> ') ? 1 : 0.4,
-                  }}>
-                    {z.range} — {z.label}
+                  { label: 'SWAP Fidelity', val: twSwapFidelity, color: twSwapFidelity == null ? 'var(--text-faint)' : twSwapFidelity >= 0.7 ? '#22cc66' : twSwapFidelity >= 0.5 ? '#4a9eff' : '#e94560', note: '(high=normal)' },
+                  { label: 'Directionality', val: twQDirectionality, color: twQDirectionality == null ? 'var(--text-faint)' : twQDirectionality >= 0.3 ? '#e94560' : '#22cc66', note: '(high=anomalous)' },
+                  { label: 'Phase Coherence', val: twPhaseCoherence, color: twPhaseCoherence == null ? 'var(--text-faint)' : twPhaseCoherence >= 0.8 ? '#e94560' : '#22cc66', note: '(high=sustained drift)' },
+                ].map(s => (
+                  <div key={s.label} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 9, color: 'var(--text-faint)', minWidth: 90 }}>{s.label}</span>
+                    <div style={{ flex: 1, height: 5, background: 'var(--bg-raised)', borderRadius: 3 }}>
+                      <div style={{ height: '100%', width: `${Math.min(s.val ?? 0, 1) * 100}%`, background: s.color, borderRadius: 3, transition: 'width 0.5s' }} />
+                    </div>
+                    <span style={{ fontSize: 9, fontFamily: 'monospace', color: s.color, minWidth: 42 }}>{s.val != null ? s.val.toFixed(3) : '—'}</span>
+                    <span style={{ fontSize: 8, color: 'var(--text-faint)' }}>{s.note}</span>
                   </div>
                 ))}
               </div>
             </div>
           </div>
 
-          {/* Gradient bar */}
+          {/* Confidence gradient bar — low conf = normal, high conf = anomalous */}
           <div style={{ marginTop: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-              <span style={{ fontSize: 9, color: 'var(--text-faint)' }}>Completely different</span>
-              <span style={{ fontSize: 9, color: 'var(--text-faint)', fontFamily: 'monospace' }}>F = {fmin.toFixed(4)}</span>
-              <span style={{ fontSize: 9, color: 'var(--text-faint)' }}>Identical to baseline</span>
+              <span style={{ fontSize: 9, color: 'var(--text-faint)' }}>Normal (conf low)</span>
+              <span style={{ fontSize: 9, color: 'var(--text-faint)', fontFamily: 'monospace' }}>
+                threshold = 0.1854 · conf = {twQuantumConf != null ? twQuantumConf.toFixed(4) : '—'}</span>
+              <span style={{ fontSize: 9, color: 'var(--text-faint)' }}>Anomalous (conf high)</span>
             </div>
-            <div style={{ height: 10, background: 'linear-gradient(90deg, #e94560 0%, #f5a623 30%, #4a9eff 55%, #22cc66 100%)', borderRadius: 5, position: 'relative' }}>
+            <div style={{ height: 10, background: 'linear-gradient(90deg, #22cc66 0%, #4a9eff 30%, #f5a623 55%, #e94560 100%)', borderRadius: 5, position: 'relative' }}>
+              {/* Threshold marker at 0.1854 */}
               <div style={{
-                position: 'absolute', left: `${fmin * 100}%`, top: '50%', transform: 'translate(-50%,-50%)',
-                width: 16, height: 16, borderRadius: '50%', background: fminColor(fmin),
-                border: '2px solid var(--bg-surface)', boxShadow: `0 0 6px ${fminColor(fmin)}`,
-                transition: 'left 0.6s ease',
+                position: 'absolute', left: '18.54%', top: 0, bottom: 0,
+                width: 1.5, background: '#f5a623', opacity: 0.7,
               }} />
+              {twQuantumConf != null && (
+                <div style={{
+                  position: 'absolute', left: `${twQuantumConf * 100}%`, top: '50%', transform: 'translate(-50%,-50%)',
+                  width: 16, height: 16, borderRadius: '50%', background: twQcColor,
+                  border: '2px solid var(--bg-surface)', boxShadow: `0 0 6px ${twQcColor}`,
+                  transition: 'left 0.6s ease',
+                }} />
+              )}
             </div>
           </div>
         </div>
@@ -1854,9 +1995,9 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
           <div>
-            <div className="section-title">Behavioral DNA — 17 Feature Vectors</div>
+            <div className="section-title">Behavioral DNA — 19 Feature Vectors</div>
             <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 3 }}>
-              Encoded features collected this cycle. Click any tile or "View Pipeline" to see full mapping and explanations.
+              Raw features collected this cycle (F1–F19). PQC-transformed → 8-dim AE latent → 3-qubit quantum state. Click any tile or "View Pipeline" to see full mapping.
             </div>
           </div>
           <button onClick={() => setShowMapping(true)} style={{
@@ -1873,7 +2014,7 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
           </div>
         ) : (
           <>
-            {/* Obscured F1–F17 grid */}
+            {/* Obscured F1–F19 grid */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))', gap: 6, marginBottom: 14 }}>
               {FEATURE_META.map((f, i) => {
                 const val = fv[f.key];
@@ -1926,25 +2067,32 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
               })}
             </div>
 
-            {/* Anomaly verdict row */}
-            {fv.anomaly_score != null && (
-              <div style={{ display: 'flex', gap: 16, padding: '12px 14px', background: fv.is_anomaly ? 'rgba(233,69,96,0.08)' : 'rgba(34,204,102,0.06)', borderRadius: 8, border: `1px solid ${fv.is_anomaly ? 'rgba(233,69,96,0.25)' : 'rgba(34,204,102,0.2)'}`, alignItems: 'center', flexWrap: 'wrap' }}>
-                <div style={{ fontSize: 26, lineHeight: 1 }}>{fv.is_anomaly ? '⚠' : '✓'}</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: fv.is_anomaly ? 'var(--red)' : 'var(--green)', marginBottom: 3 }}>
-                    {fv.is_anomaly ? 'Anomaly Detected' : 'Behaviour Normal'}
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                    IsolationForest score: <span style={{ fontFamily: 'monospace', color: 'var(--text)', filter: 'blur(2.5px)', userSelect: 'none' }}>{fv.anomaly_score.toFixed(4)}</span>
-                    {' '}<span style={{ fontSize: 10, color: 'var(--text-faint)' }}>(unlock to view)</span>
-                    {fv.is_anomaly
-                      ? ' — pattern deviates significantly from trained baseline.'
-                      : ' — server behaviour matches the trained baseline.'}
-                  </div>
+            {/* Classical ensemble verdict row */}
+            {(fv.anomaly_score != null || fv.recon_error != null || fv.latent_fidelity != null) && (
+              <div style={{ padding: '12px 14px', background: fv.is_anomaly ? 'rgba(233,69,96,0.06)' : 'rgba(34,204,102,0.04)', borderRadius: 8, border: `1px solid ${fv.is_anomaly ? 'rgba(233,69,96,0.2)' : 'rgba(34,204,102,0.15)'}` }}>
+                <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 8, color: fv.is_anomaly ? 'var(--red)' : 'var(--green)' }}>
+                  {fv.is_anomaly ? '⚠ Classical ensemble: anomaly' : '✓ Classical ensemble: normal'}
                 </div>
-                <button onClick={() => setShowMapping(true)} style={{ background: 'none', border: '1px solid rgba(155,125,255,0.3)', borderRadius: 5, color: '#9b7dff', cursor: 'pointer', fontSize: 10, padding: '3px 10px' }}>
-                  Unlock details
-                </button>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                  {[
+                    { label: 'Recon Error', value: fv.recon_error, bad: v => v > 0.05, fmt: v => v.toFixed(4) },
+                    { label: 'Latent Fidelity', value: fv.latent_fidelity, bad: v => v < 0.6, fmt: v => v.toFixed(4) },
+                    { label: 'IF Score', value: fv.anomaly_score, bad: v => v < 0, fmt: v => v.toFixed(4) },
+                  ].map(s => {
+                    const flagged = s.value != null && s.bad(s.value);
+                    return (
+                      <div key={s.label} style={{ fontSize: 11, fontFamily: 'monospace' }}>
+                        <span style={{ color: 'var(--text-faint)', fontSize: 10 }}>{s.label}: </span>
+                        <span style={{ color: s.value == null ? 'var(--text-faint)' : flagged ? 'var(--red)' : 'var(--green)', fontWeight: 600 }}>
+                          {s.value != null ? s.fmt(s.value) : '—'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 8 }}>
+                  All three must flag simultaneously · quantum signal is independent
+                </div>
               </div>
             )}
           </>
@@ -1968,16 +2116,17 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
 // Training state is driven entirely by polling /api/train/status.
 // No local animation timers that die on tab switch — the server is the source of truth.
 const TRAIN_MODES = [
-  { id: 'quick_demo', label: 'Quick Demo', dur: '2 min', desc: 'Fast baseline — demo only' },
-  { id: 'standard',   label: 'Standard',   dur: '5 min', desc: 'Recommended for production' },
+  { id: 'quick_demo', label: 'Quick',    dur: '~1 min',  desc: 'Finetune with ~10 fast samples — builds quantum subspace quickly. Good for first baseline.' },
+  { id: 'standard',   label: 'Standard', dur: '~3 min',  desc: 'Sufficient samples for AE finetune + IsolationForest + quantum subspace. Recommended.' },
+  { id: 'deep',        label: 'Deep',     dur: '~20 min', desc: 'Maximum samples, 20 AE finetune epochs — most adapted model. Best results over time.' },
 ];
 
 const TRAIN_STEPS_MAP = {
   collecting:  'Collecting baseline samples…',
-  autoencoder: 'Training autoencoder network…',
+  autoencoder: 'Finetuning BehavioralAE (19→8-dim latent)…',
   isolation:   'Running IsolationForest…',
-  quantum:     'Building quantum memory basis…',
-  calibrating: 'Calibrating F_min threshold…',
+  quantum:     'Building per-identity quantum subspace (PCA)…',
+  calibrating: 'Calibrating V3 confidence threshold…',
   validating:  'Validating model…',
   saving:      'Saving model weights…',
   complete:    'Model ready.',
@@ -1985,19 +2134,24 @@ const TRAIN_STEPS_MAP = {
 const TRAIN_STEPS_ORDER = Object.keys(TRAIN_STEPS_MAP);
 
 function TrainSubTab() {
-  const [mode, setMode]     = useState('quick_demo');
-  const [status, setStatus] = useState(null);
+  const [mode, setMode]       = useState('quick_demo');
+  const [status, setStatus]   = useState(null);
   const [starting, setStarting] = useState(false);
-  const [error, setError]   = useState('');
-  const pollRef             = useRef(null);
+  const [error, setError]     = useState('');
+  const [basisStatus, setBasisStatus] = useState(null);
+  const [liveStatus, setLiveStatus]   = useState(null);
+  const pollRef               = useRef(null);
 
-  // Always poll status — keeps working across tab switches
   useEffect(() => {
     function poll() {
       api.trainStatus().then(r => { if (r.ok) setStatus(r.data); }).catch(() => {});
+      // basisStatus is authoritative for quantum basis — works even when TaaraWare buffer is empty
+      api.basisStatus().then(r => { if (r.ok) setBasisStatus(r.data); }).catch(() => {});
+      // liveStatus for classical pipeline signals only
+      api.status().then(r => { if (r.ok) setLiveStatus(r.data); }).catch(() => {});
     }
     poll();
-    pollRef.current = setInterval(poll, 2000);
+    pollRef.current = setInterval(poll, 3000);
     return () => clearInterval(pollRef.current);
   }, []);
 
@@ -2026,7 +2180,34 @@ function TrainSubTab() {
 
   return (
     <div className="page">
-      <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>Train</div>
+      <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Train Classical Ensemble</div>
+      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 20, lineHeight: 1.6 }}>
+        Training here builds the <strong>normal baseline</strong> — both the quantum memory basis and the classical ensemble.
+        Live TaaraWare monitoring only <em>checks</em> incoming behavior against this baseline, never modifying it.
+        Once trained, quantum + all three classical signals must agree before an alert fires, eliminating false positives.
+      </div>
+
+      {/* How it works */}
+      <div className="card" style={{ marginBottom: 16, borderLeft: '3px solid var(--accent)' }}>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>How detection works after training</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {[
+            { icon: '⬢', label: 'Quantum memory basis (built here)', desc: 'Built from training data collected here — not from live monitoring. Encodes normal observations via 3-qubit AmplitudeEmbedding on 8-dim latent. Builds PCA subspace for V3 SWAP/Directionality/Coherence signals. Alert threshold 0.1854.' },
+            { icon: '①', label: 'Reconstruction error', desc: 'Autoencoder trained only on normal behavior. At inference: feed current state through the same weights — if it cannot reconstruct accurately, the behavior is outside what it learned as normal. High MSE = anomaly.' },
+            { icon: '②', label: 'Latent fidelity', desc: 'The latent space is the behavioral DNA. Cosine fidelity between the current latent state and the stored mean-normal latent state shows directional deviation — not just magnitude. Low fidelity = the server is heading in a direction it has never gone before.' },
+            { icon: '③', label: 'Isolation Forest on latent', desc: 'Statistical backstop on the learned latent space. Isolation Forest isolates whether this latent state is a statistical outlier from all the normal latent states seen during training.' },
+            { icon: '⚡', label: 'Dual-confirmed alert (orange)', desc: 'Fires when quantum AND all three classical signals agree. Four independent lenses — Hilbert space fidelity, reconstruction failure, latent direction, statistical isolation — must all flag the same state simultaneously.' },
+          ].map(r => (
+            <div key={r.label} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <span style={{ fontSize: 16, marginTop: 1 }}>{r.icon}</span>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 12 }}>{r.label}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.6 }}>{r.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Training Mode</div>
@@ -2104,32 +2285,31 @@ function TrainSubTab() {
       {status && (
         <div className="card">
           <div className="section-title" style={{ marginBottom: 10 }}>Model State</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
             {[
               {
-                label: 'Status',
+                label: 'Training Status',
                 value: status.status || '—',
                 color: status.status === 'running' ? 'var(--accent)' : status.status === 'completed' ? 'var(--green)' : status.status === 'failed' ? 'var(--red)' : 'var(--text-faint)',
+                sub: null,
               },
               {
-                label: 'Embedder',
+                label: 'Autoencoder',
                 value: status.embedder_trained ? '✓ Trained' : '✗ Not trained',
                 color: status.embedder_trained ? 'var(--green)' : 'var(--text-faint)',
+                sub: 'Reconstruction error + latent DNA',
               },
               {
-                label: 'Anomaly Detector',
+                label: 'Isolation Forest',
                 value: status.anomaly_detector_trained ? '✓ Trained' : '✗ Not trained',
                 color: status.anomaly_detector_trained ? 'var(--green)' : 'var(--text-faint)',
+                sub: 'Statistical outlier on latent space',
               },
-              {
-                label: 'TAARA Model',
-                value: status.taara_trained ? '✓ Trained' : '✗ Not trained',
-                color: status.taara_trained ? 'var(--green)' : 'var(--text-faint)',
-              },
-            ].map(({ label, value, color }) => (
+            ].map(({ label, value, color, sub }) => (
               <div key={label} style={{ background: 'var(--bg-raised)', borderRadius: 6, padding: '8px 12px' }}>
                 <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>{label}</div>
                 <div style={{ fontSize: 12, fontWeight: 600, color: color || 'var(--text)' }}>{value}</div>
+                {sub && <div style={{ fontSize: 9, color: 'var(--text-faint)', marginTop: 2 }}>{sub}</div>}
               </div>
             ))}
           </div>
@@ -2145,6 +2325,71 @@ function TrainSubTab() {
           )}
         </div>
       )}
+
+      {/* ── Quantum Basis Status ─────────────────────────────────────────── */}
+      {(() => {
+        // Quantum basis: always from basisStatus (direct state read — doesn't need live TaaraWare buffer)
+        const basisSize   = basisStatus?.basis_size ?? 0;
+        const basisMature = basisSize >= 3;
+        const quantumResiduals = basisStatus?.quantum_residuals ?? 0;
+        // Live F_min from TaaraWare polling (only valid when buffer has data)
+        const nov = liveStatus?.novelty || {};
+        const fmin = nov.f_min;
+        const severity = nov.severity || '';
+        const reconError = nov.recon_error;
+        const latentFidelity = nov.latent_fidelity;
+        // Classical: prefer basisStatus trained flags (authoritative), fallback to training_status
+        const classicalTrained = (basisStatus?.autoencoder_trained && basisStatus?.isolation_forest_trained)
+          || (status?.embedder_trained && status?.anomaly_detector_trained);
+        return (
+          <div className="card" style={{ marginTop: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>Live Signal State</div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>All detection signals — current values from TaaraWare</div>
+              </div>
+            </div>
+
+            {/* Quantum */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: 'var(--text-faint)', marginBottom: 6 }}>⬢ Quantum Basis</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                {[
+                  { label: 'Basis Vectors', value: basisMature ? `${basisSize} ✓` : (basisSize > 0 ? `${basisSize}/3` : '0 — train needed'), color: basisMature ? 'var(--green)' : basisSize > 0 ? 'var(--blue)' : 'var(--amber)', mono: true },
+                  { label: 'Quantum States', value: quantumResiduals > 0 ? `${quantumResiduals} loaded` : '0 — train needed', color: quantumResiduals > 0 ? 'var(--green)' : 'var(--amber)', mono: true },
+                  { label: 'Status', value: basisMature ? 'READY' : (basisSize > 0 ? 'BUILDING' : 'NEEDS TRAINING'), color: basisMature ? 'var(--green)' : basisSize > 0 ? 'var(--blue)' : 'var(--amber)' },
+                ].map(t => (
+                  <div key={t.label} style={{ background: 'var(--bg-raised)', borderRadius: 6, padding: '8px 10px' }}>
+                    <div style={{ fontSize: 9, color: 'var(--text-faint)', marginBottom: 2 }}>{t.label}</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, fontFamily: t.mono ? 'monospace' : 'inherit', color: t.color }}>{t.value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Classical */}
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: 'var(--text-faint)', marginBottom: 6 }}>⊕ Classical Pipeline</div>
+              {!classicalTrained
+                ? <div style={{ fontSize: 11, color: 'var(--text-faint)', padding: '10px 0' }}>Train the autoencoder + Isolation Forest above to activate reconstruction error, latent fidelity, and statistical isolation signals.</div>
+                : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                  {[
+                    { label: 'Recon Error', value: reconError != null ? reconError.toFixed(4) : '—', color: reconError != null ? (reconError > 0.05 ? 'var(--red)' : 'var(--green)') : 'var(--text-faint)', sub: '> 0.05 = anomaly' },
+                    { label: 'Latent Fidelity', value: latentFidelity != null ? latentFidelity.toFixed(4) : '—', color: latentFidelity != null ? (latentFidelity < 0.6 ? 'var(--red)' : 'var(--green)') : 'var(--text-faint)', sub: '< 0.6 = direction anomaly' },
+                    { label: 'IF Verdict', value: nov.classical_anomaly ? '⚠ ANOMALY' : '✓ Normal', color: nov.classical_anomaly ? 'var(--amber)' : 'var(--green)', sub: 'All 3 must agree' },
+                  ].map(t => (
+                    <div key={t.label} style={{ background: 'var(--bg-raised)', borderRadius: 6, padding: '8px 10px' }}>
+                      <div style={{ fontSize: 9, color: 'var(--text-faint)', marginBottom: 2 }}>{t.label}</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, fontFamily: 'monospace', color: t.color }}>{t.value}</div>
+                      <div style={{ fontSize: 9, color: 'var(--text-faint)', marginTop: 2 }}>{t.sub}</div>
+                    </div>
+                  ))}
+                </div>
+              }
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -2212,6 +2457,7 @@ function AgentSubTab() {
   const [learningMode, setLearningMode] = useState(false);
   const [proposed, setProposed]         = useState([]);
   const [banditStats, setBanditStats]   = useState(null);
+  const [banditRecs, setBanditRecs]     = useState([]);
   const [auditLog, setAuditLog]         = useState([]);
   const [manualCmd, setManualCmd]       = useState('');
   const [aiPrompt, setAiPrompt]         = useState('');
@@ -2220,10 +2466,15 @@ function AgentSubTab() {
   const [execResult, setExecResult]     = useState(null);
   const [execError, setExecError]       = useState('');
   const [generating, setGenerating]     = useState(false);
+  // Interactive stdin
+  const [pendingCmd, setPendingCmd]     = useState('');   // command that needs stdin
+  const [stdinPrompt, setStdinPrompt]   = useState('');   // prompt text from server
+  const [stdinValue, setStdinValue]     = useState('');   // user's input
 
   useEffect(() => {
     api.proposedActions().then(r => { if (r.ok) setProposed(r.data.actions || r.data || []); }).catch(() => {});
     api.banditSummary().then(r => { if (r.ok) setBanditStats(r.data); }).catch(() => {});
+    api.banditRecommend(null, null).then(r => { if (r.ok) setBanditRecs(r.data.recommendations || []); }).catch(() => {});
     api.auditTrail(20).then(r => { if (r.ok) setAuditLog(r.data.actions || r.data || []); }).catch(() => {});
     api.agentStats().then(r => { if (r.ok) setLearningMode(r.data.learning_mode ?? false); }).catch(() => {});
   }, []);
@@ -2238,15 +2489,35 @@ function AgentSubTab() {
     setProposed(p => p.filter((_, i) => i !== idx));
   }
 
-  async function execManual() {
-    if (!manualCmd.trim()) return;
-    setExecuting(true); setExecResult(null); setExecError('');
+  async function _runCmd(command, source) {
+    setExecuting(true); setExecResult(null); setExecError(''); setPendingCmd(''); setStdinPrompt(''); setStdinValue('');
     try {
-      const r = await api.execute({ command: manualCmd, source: 'manual' });
-      if (r.ok) setExecResult(r.data);
-      else setExecError(r.data?.detail || 'Execution failed');
+      const r = await api.execute({ command, source });
+      if (!r.ok) { setExecError(r.data?.detail || 'Execution failed'); return; }
+      if (r.data?.needs_input) {
+        // Command is waiting for interactive input — show stdin box
+        setPendingCmd(command);
+        setStdinPrompt(r.data.input_prompt || 'Input required:');
+      } else {
+        setExecResult(r.data);
+      }
     } catch (e) { setExecError(e.message); }
     finally { setExecuting(false); }
+  }
+
+  async function execManual() {
+    if (!manualCmd.trim()) return;
+    await _runCmd(manualCmd, 'manual');
+  }
+
+  async function sendStdin() {
+    if (!pendingCmd || !stdinValue.trim()) return;
+    setExecuting(true);
+    try {
+      const r = await api.executeStdin({ command: pendingCmd, stdin_input: stdinValue });
+      if (r.ok) setExecResult(r.data); else setExecError(r.data?.detail || 'Failed');
+    } catch (e) { setExecError(e.message); }
+    finally { setExecuting(false); setPendingCmd(''); setStdinPrompt(''); setStdinValue(''); }
   }
 
   async function generateAi() {
@@ -2261,12 +2532,8 @@ function AgentSubTab() {
 
   async function approveAi() {
     if (!aiGenerated) return;
-    setExecuting(true); setExecResult(null); setExecError('');
-    try {
-      const r = await api.execute({ command: aiGenerated, source: 'ai_approved' });
-      if (r.ok) setExecResult(r.data); else setExecError(r.data?.detail || 'Failed');
-    } catch (e) { setExecError(e.message); }
-    finally { setExecuting(false); setAiGenerated(''); }
+    await _runCmd(aiGenerated, 'ai_approved');
+    setAiGenerated('');
   }
 
   return (
@@ -2279,7 +2546,7 @@ function AgentSubTab() {
           <div>
             <div style={{ fontSize: 14, fontWeight: 700 }}>Agent Learning Mode</div>
             <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 2 }}>
-              Approved actions are stored for contrastive bandit learning.
+              Every executed command is recorded in the contrastive bandit — TAARA learns which actions work in which quantum contexts.
             </div>
           </div>
           <button onClick={() => setLearningMode(v => !v)} style={{
@@ -2294,14 +2561,50 @@ function AgentSubTab() {
           </button>
         </div>
         {banditStats && (
-          <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--bg-raised)', borderRadius: 6, fontSize: 11, color: 'var(--text-faint)' }}>
-            This action type has been approved{' '}
-            <span style={{ color: 'var(--text)' }}>{banditStats.approved_count || 0}</span> of{' '}
-            <span style={{ color: 'var(--text)' }}>{banditStats.total_count || 0}</span> times in this quantum context.
-            Pre-approval threshold: <span style={{ color: 'var(--accent)' }}>90%</span>
+          <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--bg-raised)', borderRadius: 6, fontSize: 11, color: 'var(--text-faint)', display: 'flex', gap: 16 }}>
+            <span>Arms learned: <span style={{ color: 'var(--text)' }}>{Object.keys(banditStats.arm_stats || {}).length}</span></span>
+            <span>Pre-approved: <span style={{ color: 'var(--green)' }}>{banditStats.pre_approved?.length || 0}</span></span>
+            <span>Autonomy level: <span style={{ color: 'var(--accent)' }}>{banditStats.autonomy_level ?? 1}/5</span></span>
+            <span>Pre-approval threshold: <span style={{ color: 'var(--accent)' }}>90% approval + 85% success</span></span>
           </div>
         )}
       </div>
+
+      {/* TAARA Learned Recommendations */}
+      {banditRecs.length > 0 && (
+        <div className="card" style={{ marginBottom: 16, borderColor: 'rgba(74,158,255,0.2)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <div className="section-title">TAARA Learned Recommendations</div>
+            <span style={{ fontSize: 10, color: 'var(--blue)', fontWeight: 600, letterSpacing: 0.5 }}>UCB BANDIT</span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-faint)', marginBottom: 10 }}>
+            Ranked by contrastive bandit UCB score for current quantum context. More executions → better recommendations.
+          </div>
+          {banditRecs.map((rec, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: rec.pre_approved ? 'rgba(34,204,102,0.06)' : 'var(--bg-raised)', border: `1px solid ${rec.pre_approved ? 'rgba(34,204,102,0.2)' : 'var(--border)'}`, borderRadius: 6, marginBottom: 6 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: rec.pre_approved ? 'var(--green)' : 'var(--blue)' }}>{rec.action_type.replace(/_/g, ' ')}</span>
+                  {rec.pre_approved && <span style={{ fontSize: 8, background: 'rgba(34,204,102,0.2)', color: 'var(--green)', borderRadius: 3, padding: '1px 5px', fontWeight: 700 }}>PRE-APPROVED</span>}
+                  <span style={{ fontSize: 9, color: 'var(--text-faint)', marginLeft: 'auto' }}>
+                    UCB {rec.ucb_score?.toFixed(2)} · {rec.times_seen > 0 ? `${rec.times_seen}× seen · ${Math.round((rec.success_rate || 0) * 100)}% success` : 'unexplored'}
+                  </span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{rec.description}</div>
+                <div style={{ fontSize: 9, color: 'var(--text-faint)', opacity: 0.7 }}>{rec.bandit_rationale}</div>
+                {rec.contrast_insight && <div style={{ fontSize: 9, color: 'var(--amber)', marginTop: 2 }}>⚡ {rec.contrast_insight}</div>}
+              </div>
+              <button className="btn" onClick={() => {
+                api.generateCommand(`${rec.action_type.replace(/_/g,' ')}: ${rec.description}`).then(r => {
+                  if (r.ok && r.data.command) { setAiGenerated(r.data.command); }
+                });
+              }} style={{ fontSize: 10, borderColor: 'rgba(74,158,255,0.3)', color: 'var(--blue)' }}>
+                Generate
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Pending proposed actions */}
       {proposed.length > 0 && (
@@ -2332,6 +2635,21 @@ function AgentSubTab() {
             {executing ? <span className="spinner" /> : 'Execute'}
           </button>
         </div>
+        {/* Interactive stdin box — shown when command is waiting for input */}
+        {pendingCmd && (
+          <div style={{ marginTop: 10, padding: '10px 12px', background: 'rgba(245,166,35,0.07)', border: '1px solid rgba(245,166,35,0.25)', borderRadius: 6 }}>
+            <div style={{ fontSize: 11, color: 'var(--amber)', marginBottom: 6, fontFamily: 'monospace' }}>
+              ⌨ Command is waiting for input: <span style={{ opacity: 0.7 }}>{stdinPrompt}</span>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input className="input" value={stdinValue} onChange={e => setStdinValue(e.target.value)}
+                placeholder="Type your response and press Enter…" style={{ flex: 1, fontFamily: 'monospace' }}
+                onKeyDown={e => e.key === 'Enter' && sendStdin()} autoFocus />
+              <button className="btn btn-primary" onClick={sendStdin} disabled={executing} style={{ fontSize: 12 }}>Send</button>
+              <button className="btn" onClick={() => { setPendingCmd(''); setStdinPrompt(''); setStdinValue(''); }} style={{ fontSize: 12 }}>Cancel</button>
+            </div>
+          </div>
+        )}
         <ExecResultBlock result={execResult} error={execError} />
       </div>
 
@@ -2555,8 +2873,36 @@ function CustomActionsSubTab() {
     finally { setExecuting(false); }
   }
 
+  const [rollbackState, setRollbackState] = useState({}); // id → {loading, cmd, explanation, notRollbackable, alternative, confirmed}
+
   async function rollback(id) {
-    try { await api.rollback(id); } catch (_) {}
+    setRollbackState(s => ({ ...s, [id]: { loading: true } }));
+    try {
+      // Phase 1: get rollback command (or explanation)
+      const r = await api.rollbackAction(id, false);
+      if (!r.ok) { setRollbackState(s => ({ ...s, [id]: { error: r.data?.detail || 'Failed' } })); return; }
+      if (r.data.rollbackable === false) {
+        setRollbackState(s => ({ ...s, [id]: { notRollbackable: true, explanation: r.data.explanation, alternative: r.data.alternative } }));
+      } else {
+        setRollbackState(s => ({ ...s, [id]: { cmd: r.data.rollback_cmd, needsApproval: true } }));
+      }
+    } catch (e) {
+      setRollbackState(s => ({ ...s, [id]: { error: e.message } }));
+    } finally {
+      setRollbackState(s => ({ ...s, [id]: { ...s[id], loading: false } }));
+    }
+  }
+
+  async function confirmRollback(id) {
+    setRollbackState(s => ({ ...s, [id]: { ...s[id], executing: true } }));
+    try {
+      const r = await api.rollbackAction(id, true);
+      if (r.ok) {
+        setRollbackState(s => ({ ...s, [id]: { done: true, success: r.data.success, output: r.data.stdout } }));
+      }
+    } catch (e) {
+      setRollbackState(s => ({ ...s, [id]: { ...s[id], error: e.message, executing: false } }));
+    }
   }
 
   return (
@@ -2637,23 +2983,58 @@ function CustomActionsSubTab() {
           <table className="data-table">
             <thead><tr><th>Command</th><th>Source</th><th>Result</th><th>Time</th><th>Rollback</th></tr></thead>
             <tbody>
-              {actionLog.slice(0, 15).map((a, i) => (
-                <tr key={i}>
-                  <td><code style={{ fontSize: 10 }}>{a.command || a.details || a.action || '—'}</code></td>
-                  <td style={{ fontSize: 11 }}>{a.source || '—'}</td>
-                  <td><span style={{ color: a.success ? 'var(--green)' : 'var(--red)' }}>{a.success ? '✓' : '✗'}</span></td>
-                  <td style={{ fontSize: 10, color: 'var(--text-faint)' }}>
-                    {a.timestamp ? new Date(a.timestamp * 1000).toLocaleTimeString() : '—'}
-                  </td>
-                  <td>
-                    {a.id && (
-                      <button className="btn" onClick={() => rollback(a.id)} style={{ fontSize: 10, padding: '2px 8px', color: 'var(--amber)' }}>
-                        ↺
-                      </button>
+              {actionLog.slice(0, 15).map((a, i) => {
+                const rb = rollbackState[a.id] || {};
+                return (
+                  <React.Fragment key={i}>
+                    <tr>
+                      <td><code style={{ fontSize: 10 }}>{a.command || a.details || a.action || '—'}</code></td>
+                      <td style={{ fontSize: 11 }}>{a.source || '—'}</td>
+                      <td><span style={{ color: a.success ? 'var(--green)' : 'var(--red)' }}>{a.success ? '✓' : '✗'}</span></td>
+                      <td style={{ fontSize: 10, color: 'var(--text-faint)' }}>
+                        {a.timestamp ? new Date(a.timestamp * 1000).toLocaleTimeString() : '—'}
+                      </td>
+                      <td>
+                        {a.id && !rb.done && !rb.notRollbackable && !rb.needsApproval && (
+                          <button className="btn" onClick={() => rollback(a.id)} disabled={rb.loading}
+                            style={{ fontSize: 10, padding: '2px 8px', color: 'var(--amber)' }}>
+                            {rb.loading ? '…' : '↺'}
+                          </button>
+                        )}
+                        {rb.done && <span style={{ fontSize: 10, color: rb.success ? 'var(--green)' : 'var(--red)' }}>{rb.success ? '↺ done' : '↺ failed'}</span>}
+                      </td>
+                    </tr>
+                    {/* Rollback approval row */}
+                    {rb.needsApproval && (
+                      <tr>
+                        <td colSpan={5} style={{ background: 'rgba(245,166,35,0.06)', padding: '8px 10px' }}>
+                          <div style={{ fontSize: 11, color: 'var(--amber)', marginBottom: 4 }}>Rollback command (review before executing):</div>
+                          <code style={{ fontSize: 10, color: 'var(--text)', wordBreak: 'break-all' }}>{rb.cmd}</code>
+                          <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                            <button className="btn" onClick={() => confirmRollback(a.id)} disabled={rb.executing}
+                              style={{ fontSize: 10, borderColor: 'rgba(245,166,35,0.4)', color: 'var(--amber)' }}>
+                              {rb.executing ? '…' : 'Confirm Rollback'}
+                            </button>
+                            <button className="btn" onClick={() => setRollbackState(s => ({ ...s, [a.id]: {} }))}
+                              style={{ fontSize: 10 }}>Cancel</button>
+                          </div>
+                        </td>
+                      </tr>
                     )}
-                  </td>
-                </tr>
-              ))}
+                    {/* Not rollbackable row */}
+                    {rb.notRollbackable && (
+                      <tr>
+                        <td colSpan={5} style={{ background: 'rgba(233,69,96,0.05)', padding: '8px 10px' }}>
+                          <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 2 }}>Cannot rollback: {rb.explanation}</div>
+                          {rb.alternative && <div style={{ fontSize: 11, color: 'var(--amber)' }}>Alternative: {rb.alternative}</div>}
+                          <button className="btn" onClick={() => setRollbackState(s => ({ ...s, [a.id]: {} }))}
+                            style={{ fontSize: 10, marginTop: 4 }}>Dismiss</button>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -2664,18 +3045,44 @@ function CustomActionsSubTab() {
 
 // ── Sub-tab 8: TaaraWare Deployment Details ───────────────────────────────────
 function DeployDetailsSubTab({ hostname, demoMode }) {
-  const [info, setInfo]       = useState(null);
-  const [pqcInfo, setPqcInfo] = useState(null);
-  const [collInt, setCollInt] = useState(30);
-  const [saving, setSaving]   = useState(false);
-  const [saved, setSaved]     = useState(false);
+  const [info, setInfo]           = useState(null);
+  const [pqcInfo, setPqcInfo]     = useState(null);
+  const [collInt, setCollInt]     = useState(30);
+  const [saving, setSaving]       = useState(false);
+  const [saved, setSaved]         = useState(false);
+  const [agentStatus, setAgentStatus] = useState(null);
+  const [updating, setUpdating]   = useState(false);
+  const [updateMsg, setUpdateMsg] = useState('');
 
   useEffect(() => {
     api.taarawareInfo().then(r => {
       if (r.ok) { setInfo(r.data); if (r.data.collection_interval) setCollInt(r.data.collection_interval); }
     }).catch(() => {});
     api.pqcInfo().then(r => { if (r.ok) setPqcInfo(r.data); }).catch(() => {});
+    api.status().then(r => { if (r.ok) setAgentStatus(r.data?.agent_status); }).catch(() => {});
   }, []);
+
+  async function doUpdate() {
+    setUpdating(true); setUpdateMsg('');
+    try {
+      const r = await api.taarawareUpdate();
+      if (r.ok) {
+        setUpdateMsg(`✓ ${r.data?.message || 'Updated'}`);
+        // update_agent returns agent_status directly — use it to refresh version display
+        if (r.data?.agent_status) setAgentStatus(r.data.agent_status);
+      } else {
+        setUpdateMsg(`✗ ${r.data?.detail || 'Update failed'}`);
+      }
+    } catch (e) { setUpdateMsg(`✗ ${e.message}`); }
+    finally { setUpdating(false); }
+  }
+
+  async function refreshAgentStatus() {
+    try {
+      const r = await api.status();
+      if (r.ok && r.data?.agent_status) setAgentStatus(r.data.agent_status);
+    } catch (_) {}
+  }
 
   async function saveInterval() {
     setSaving(true);
@@ -2701,9 +3108,21 @@ function DeployDetailsSubTab({ hostname, demoMode }) {
             <span style={{ width: 12, height: 12, borderRadius: '50%', background: 'var(--green)', boxShadow: '0 0 6px var(--green)', display: 'inline-block', animation: 'pulse-green 2s infinite' }} />
             <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--green)' }}>{demoMode ? 'DEMO' : 'LIVE'}</span>
           </div>
-          {info?.agent_version && (
-            <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 6, fontFamily: 'monospace' }}>v{info.agent_version}</div>
+          <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-faint)', fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>Deployed: v{agentStatus?.deployed_version || '—'} &nbsp;|&nbsp; Current: v{agentStatus?.current_version || '2.1.0'}</span>
+            <button onClick={refreshAgentStatus} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: 'var(--text-faint)', padding: 0 }} title="Re-check version">↻</button>
+          </div>
+          {agentStatus && !agentStatus.update_available && agentStatus.deployed_version !== 'unknown' && (
+            <div style={{ marginTop: 4, fontSize: 10, color: 'var(--green)' }}>✓ Up to date</div>
           )}
+          {agentStatus?.update_available && (
+            <div style={{ marginTop: 8 }}>
+              <button className="btn btn-primary" onClick={doUpdate} disabled={updating || demoMode} style={{ fontSize: 11, padding: '4px 12px' }}>
+                {updating ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Updating…</> : '⬆ Update Agent'}
+              </button>
+            </div>
+          )}
+          {updateMsg && <div style={{ marginTop: 6, fontSize: 11, color: updateMsg.startsWith('✓') ? 'var(--green)' : 'var(--red)' }}>{updateMsg}</div>}
         </div>
         <div className="card">
           <div className="metric-label">Collection Interval</div>
@@ -2716,7 +3135,7 @@ function DeployDetailsSubTab({ hostname, demoMode }) {
               {saving ? <span className="spinner" /> : saved ? '✓' : 'Save'}
             </button>
           </div>
-          <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 6 }}>How often TaaraWare reads the 17 behavioral signals</div>
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 6 }}>How often TaaraWare reads the 19 behavioral signals</div>
         </div>
       </div>
 
@@ -2732,7 +3151,7 @@ function DeployDetailsSubTab({ hostname, demoMode }) {
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--blue)', marginBottom: 6 }}>Post-Quantum Channel Protection</div>
             <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.7, marginBottom: 12 }}>
-              Every time TaaraWare sends the 17-feature behavioral vector back to this server,
+              Every time TaaraWare sends the 19-feature behavioral vector back to this server,
               the data is protected using a <strong style={{ color: 'var(--text)' }}>Kyber768 (ML-KEM)</strong> shared secret —
               a lattice-based key encapsulation algorithm standardised by NIST as FIPS 203.
               Unlike RSA or ECDH, Kyber768 cannot be broken by quantum computers,
@@ -2763,7 +3182,7 @@ function DeployDetailsSubTab({ hostname, demoMode }) {
             {[
               { n: '①', title: 'Keypair Generated', body: 'On deploy, TAARA generates a Kyber768 public/private keypair for this host. The public key is sent to the TaaraWare agent.' },
               { n: '②', title: 'KEM Encapsulation', body: 'Agent encapsulates a random shared secret using the server\'s public key → produces ciphertext + shared_secret.' },
-              { n: '③', title: 'Feature XOR Offset', body: 'The 17 raw feature values are XOR-offset with bytes derived from shared_secret before transmission.' },
+              { n: '③', title: 'Feature XOR Offset', body: 'The 19 raw feature values are XOR-offset with bytes derived from shared_secret before transmission.' },
               { n: '④', title: 'Server Decapsulates', body: 'Server uses its private key to recover the same shared_secret and reverses the offset, recovering the true features.' },
             ].map((s, i, arr) => (
               <React.Fragment key={i}>
@@ -2789,15 +3208,15 @@ function DeployDetailsSubTab({ hostname, demoMode }) {
         )}
       </div>
 
-      {/* 17 features being collected */}
-      <div className="card">
-        <div className="section-title" style={{ marginBottom: 12 }}>17 Features Collected Each Cycle</div>
+      {/* 19 features being collected */}
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="section-title" style={{ marginBottom: 12 }}>19 Features Collected Each Cycle</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 6 }}>
           {[
-            { group: 'System Resources', color: '#4a9eff', items: ['CPU usage', 'Memory usage', 'Disk usage', 'Load avg (1m / 5m / 15m)'] },
-            { group: 'Network Activity', color: '#22cc66', items: ['Bytes sent', 'Bytes received', 'Active connections', 'Suspicious connections'] },
-            { group: 'Process Behaviour', color: '#f5a623', items: ['Process count', 'New processes (1h)', 'Privilege escalations'] },
-            { group: 'Threat Signals', color: '#e94560', items: ['Failed SSH logins (1h)', 'Temporal rhythm deviation', 'Causal chain novelty', 'Concealment signal'] },
+            { group: 'System Resources',  color: '#4a9eff', items: ['CPU usage', 'Memory usage', 'Disk usage'] },
+            { group: 'Process Behaviour', color: '#f5a623', items: ['Proc spawn rate', 'Root process ratio', 'Command entropy', 'New processes (1h)', 'Privilege escalations'] },
+            { group: 'Network Activity',  color: '#22cc66', items: ['Outbound conn rate', 'Unique dst IPs', 'Unique dst ports', 'Port entropy', 'Failed conn ratio', 'Suspicious connections'] },
+            { group: 'Threat Signals',    color: '#e94560', items: ['Failed logins (1h)', 'Temporal rhythm deviation', 'Causal chain novelty', 'Concealment signal', 'Anomaly score'] },
           ].map(g => (
             <div key={g.group} style={{ padding: '10px 12px', background: 'var(--bg-raised)', borderRadius: 7, borderLeft: `3px solid ${g.color}` }}>
               <div style={{ fontSize: 10, fontWeight: 700, color: g.color, marginBottom: 6, letterSpacing: 0.4 }}>{g.group.toUpperCase()}</div>
@@ -2811,10 +3230,42 @@ function DeployDetailsSubTab({ hostname, demoMode }) {
           ))}
         </div>
         <div style={{ marginTop: 10, fontSize: 10, color: 'var(--text-faint)' }}>
-          All 17 signals feed into the autoencoder → 4-qubit angle encoding → F_min quantum fidelity computation.
+          All 19 signals → BehavioralAE (19→64→8) → 8-dim latent → 3-qubit AmplitudeEmbedding → V3 quantum confidence.
           Collection runs every {collInt}s as a background process on the server.
         </div>
       </div>
+
+      {/* Test alert trigger */}
+      <TaaraWareTestAlert />
+    </div>
+  );
+}
+
+function TaaraWareTestAlert() {
+  const [triggering, setTriggering] = useState(false);
+  const [result, setResult]         = useState('');
+
+  async function triggerTest() {
+    setTriggering(true); setResult('');
+    try {
+      const r = await api.triggerTestAlert();
+      if (r.ok) setResult('✓ Test alert fired — check the banner at the top of the screen');
+      else setResult('✗ ' + (r.data?.detail || 'Failed to trigger'));
+    } catch (e) { setResult('✗ ' + e.message); }
+    finally { setTriggering(false); }
+  }
+
+  return (
+    <div className="card" style={{ borderLeft: '3px solid rgba(233,69,96,0.5)', background: 'rgba(233,69,96,0.03)' }}>
+      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Test Alert</div>
+      <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.6 }}>
+        Fires a synthetic T1078-style behavioral anomaly through the live quantum pipeline.
+        The alert banner will appear at the top — click Investigate to see real quantum signal values and Groq reasoning.
+      </div>
+      <button className="btn" onClick={triggerTest} disabled={triggering} style={{ borderColor: 'rgba(233,69,96,0.4)', color: '#e94560', fontSize: 12 }}>
+        {triggering ? <><span className="spinner" style={{ width: 12, height: 12 }} /> Triggering…</> : '⚡ Trigger Test Alert'}
+      </button>
+      {result && <div style={{ marginTop: 8, fontSize: 12, color: result.startsWith('✓') ? 'var(--green)' : 'var(--red)' }}>{result}</div>}
     </div>
   );
 }

@@ -18,8 +18,11 @@ import numpy as np
 import json
 import os
 import time
+from collections import deque
 from typing import Dict, List, Optional, Tuple
-from components.quantum_engine import QuantumValidator
+from components.quantum_engine import (QuantumValidator,
+    latent_swap_fidelity, latent_directionality,
+    latent_deviation_angle, latent_phase_coherence, quantum_confidence_v3)
 
 
 class IdentityMemoryBasis:
@@ -89,11 +92,10 @@ class IdentityMemoryBasis:
         From paper Eq. 6:
         ||Δ_t|| > max_{i<t} ||Δ_i||
 
-        This is threshold-free: novelty is defined purely relative to
-        the identity's own history.
+        READ-ONLY — does not modify the basis. Only the Train tab pipeline
+        (via TAARAnalyzer.add_training_observation) should modify the basis.
         """
         if self.is_bootstrapping():
-            self.add_observation(x_t)
             return {
                 'is_novel': False,
                 'status': 'bootstrap',
@@ -107,7 +109,9 @@ class IdentityMemoryBasis:
 
         is_novel = residual_norm > self.max_residual_norm if self.max_residual_norm > 0 else False
 
-        result = {
+        self.residual_history.append(residual_norm)
+
+        return {
             'is_novel': is_novel,
             'status': 'novel' if is_novel else 'known',
             'residual_norm': residual_norm,
@@ -119,14 +123,18 @@ class IdentityMemoryBasis:
             'novelty_margin': residual_norm - self.max_residual_norm if self.max_residual_norm > 0 else residual_norm
         }
 
-        self.residual_history.append(residual_norm)
-
-        if not is_novel:
-            self.add_observation(x_t)
+    def add_to_basis(self, x_t: np.ndarray):
+        """
+        Add a confirmed-normal observation to the memory basis.
+        Only called by the Train tab pipeline — never by live monitoring.
+        Residual is computed BEFORE adding (same as original check_novelty) so
+        max_residual_norm reflects how well the existing basis spans each new sample.
+        """
+        if len(self.basis_vectors) >= 1:
+            _, _, residual_norm = self.reconstruct(x_t)
             if residual_norm > self.max_residual_norm:
                 self.max_residual_norm = residual_norm
-
-        return result
+        self.add_observation(x_t)
 
     def to_dict(self) -> Dict:
         """Serialize for persistence."""
@@ -168,6 +176,11 @@ class TAARAnalyzer:
         self.memory_bases: Dict[str, IdentityMemoryBasis] = {}
         self.quantum_validator = QuantumValidator()
         self.detection_log: List[Dict] = []
+
+        # Per-identity validated quantum state (SWAP test on 8-dim latent)
+        # pca_basis: (3,8), pca_complement: (2,8), pca_mean: (8,), angle_buf: deque
+        self._quantum_state: Dict[str, Dict] = {}
+
         self.stats = {
             'total_windows': 0,
             'baseline_alerts': 0,
@@ -177,6 +190,11 @@ class TAARAnalyzer:
         }
         os.makedirs(model_dir, exist_ok=True)
         self._load_state()
+
+    @property
+    def quantum_states(self) -> Dict:
+        """Public alias for _quantum_state — used by node_identity_db and server."""
+        return self._quantum_state
 
     def get_or_create_basis(self, identity_id: str) -> IdentityMemoryBasis:
         """Get or create a memory basis for an identity."""
@@ -254,30 +272,67 @@ class TAARAnalyzer:
         return result
 
     def get_quantum_risk_assessment(self, feature_vector: np.ndarray,
-                                     identity_id: str = 'system') -> Dict:
+                                     identity_id: str = 'system', embedder=None) -> Dict:
         """
-        Compute comprehensive quantum risk assessment for a feature vector.
-        Used by TaaraAnalysis for OHA scanning.
+        Compute quantum risk assessment. READ-ONLY — never modifies basis or memory.
+
+        Returns both the legacy F_min signals (for existing UI) AND the validated
+        v3 SWAP-test signals (swap_fidelity, q_directionality, phase_coherence,
+        quantum_confidence) when the latent quantum state is available.
         """
         basis = self.get_or_create_basis(identity_id)
 
         if basis.is_bootstrapping():
-            basis.add_observation(feature_vector)
+            # Still compute SWAP signals from the seeded PCA quantum state so the
+            # dashboard shows live values even before the memory basis is mature.
+            swap_fidelity = q_directionality = phase_coherence = quantum_confidence = None
+            qs = self._quantum_state.get(identity_id)
+            if qs is not None and qs.get('pca_basis') is not None:
+                try:
+                    if qs.get('embedder') is None and embedder is not None:
+                        qs['embedder'] = embedder
+                    z_t = qs['embedder'].embed(feature_vector) if qs.get('embedder') else None
+                    if z_t is not None:
+                        angle_buf = qs.setdefault('angle_buffer', deque(maxlen=4))
+                        sf  = latent_swap_fidelity(z_t, qs['pca_basis'], qs['pca_mean'])
+                        qd  = latent_directionality(z_t, qs['pca_mean'], qs['pca_complement'])
+                        ang = latent_deviation_angle(z_t, qs['pca_mean'], qs['pca_complement'])
+                        angle_buf.append(ang)
+                        coh = latent_phase_coherence(list(angle_buf))
+                        α, β, γ = qs.get('weights', (0.263, 0.285, 0.451))
+                        qc  = quantum_confidence_v3(sf, qd, coh, alpha=α, beta=β, gamma=γ)
+                        swap_fidelity     = round(sf, 4)
+                        q_directionality  = round(qd, 4)
+                        phase_coherence   = round(coh, 4)
+                        quantum_confidence = round(qc, 4)
+                except Exception:
+                    pass
             return {
                 'risk_score': 0,
                 'severity': 'BOOTSTRAPPING',
                 'quantum_novelty': 0,
                 'magnitude_score': 0,
-                'f_min': 1.0,
+                'f_min': None,
                 'is_directionally_novel': False,
-                'note': f'Collecting baseline ({len(basis.basis_vectors)}/{basis.bootstrap_size})'
+                'basis_size': len(basis.basis_vectors),
+                'note': f'Calibrating ({len(basis.basis_vectors)}/{basis.bootstrap_size} observations)',
+                'swap_fidelity':      swap_fidelity,
+                'q_directionality':   q_directionality,
+                'phase_coherence':    phase_coherence,
+                'quantum_confidence': quantum_confidence,
             }
 
         x_hat, residual, residual_norm = basis.reconstruct(feature_vector)
 
+        if not self.quantum_validator.memory_residuals and basis.basis_vectors:
+            for bv in basis.basis_vectors:
+                _, bv_residual, _ = basis.reconstruct(bv)
+                self.quantum_validator.add_to_memory(bv_residual)
+
         risk = self.quantum_validator.get_quantum_risk_score(
             residual,
-            memory_basis=[r for r in self.quantum_validator.memory_residuals] if self.quantum_validator.memory_residuals else None
+            memory_basis=[r for r in self.quantum_validator.memory_residuals]
+                          if self.quantum_validator.memory_residuals else None
         )
 
         risk['residual_norm'] = round(residual_norm, 4)
@@ -285,7 +340,152 @@ class TAARAnalyzer:
         risk['basis_size'] = len(basis.basis_vectors)
         risk['identity_id'] = identity_id
 
+        # ── Validated v3 SWAP signals on 8-dim latent ──────────────────────────
+        # Uses the quantum state built by add_training_observation() when training
+        # sets up the per-identity PCA basis from normal latent vectors.
+        qs = self._quantum_state.get(identity_id)
+        if qs is not None:
+            try:
+                # Reconnect embedder if this state was restored from disk (must happen before embed call)
+                if qs.get('embedder') is None and embedder is not None:
+                    qs['embedder'] = embedder
+                z_t = qs['embedder'].embed(feature_vector) if qs.get('embedder') else None
+
+                if z_t is not None and qs.get('pca_basis') is not None:
+                    pca_basis      = qs['pca_basis']
+                    pca_mean       = qs['pca_mean']
+                    pca_complement = qs['pca_complement']
+                    angle_buf      = qs['angle_buffer']
+
+                    sf  = latent_swap_fidelity(z_t, pca_basis, pca_mean)
+                    qd  = latent_directionality(z_t, pca_mean, pca_complement)
+                    ang = latent_deviation_angle(z_t, pca_mean, pca_complement)
+                    angle_buf.append(ang)
+                    coh = latent_phase_coherence(list(angle_buf))
+                    # Use per-identity fitted weights if available, else global prior
+                    α, β, γ = qs.get('weights', (0.263, 0.285, 0.451))
+                    qc  = quantum_confidence_v3(sf, qd, coh, alpha=α, beta=β, gamma=γ)
+
+                    risk['swap_fidelity']      = round(sf, 4)
+                    risk['q_directionality']   = round(qd, 4)
+                    risk['phase_coherence']    = round(coh, 4)
+                    risk['quantum_confidence'] = round(qc, 4)
+                    # Override risk_score with validated confidence (0-100 scale)
+                    risk['risk_score'] = round(qc * 100, 1)
+                    risk['severity'] = (
+                        'CRITICAL' if qc >= 0.75 else 'HIGH' if qc >= 0.45
+                        else 'MEDIUM' if qc >= 0.18 else 'LOW'
+                    )
+                else:
+                    risk['swap_fidelity'] = risk['q_directionality'] = None
+                    risk['phase_coherence'] = risk['quantum_confidence'] = None
+            except Exception:
+                risk['swap_fidelity'] = risk['q_directionality'] = None
+                risk['phase_coherence'] = risk['quantum_confidence'] = None
+        else:
+            risk['swap_fidelity'] = risk['q_directionality'] = None
+            risk['phase_coherence'] = risk['quantum_confidence'] = None
+
         return risk
+
+    def add_training_observation(self, feature_vector: np.ndarray, identity_id: str,
+                                  embedder=None):
+        """
+        Add a confirmed-normal observation to the basis and quantum memory.
+        ONLY called by the Train tab pipeline — never by live monitoring.
+
+        embedder: optional DNAEmbedder — if provided, also builds the per-identity
+        PCA quantum state (pca_basis, pca_complement, pca_mean) from accumulated
+        normal latents. This enables the validated v3 SWAP signals at inference.
+        """
+        basis = self.get_or_create_basis(identity_id)
+        basis.add_to_basis(feature_vector)
+
+        if len(basis.basis_vectors) >= 2:
+            _, residual, _ = basis.reconstruct(feature_vector)
+            self.quantum_validator.add_to_memory(residual)
+
+        # Build / update per-identity PCA quantum state from normal latents
+        if embedder is not None and embedder.is_ready():
+            try:
+                qs = self._quantum_state.setdefault(identity_id, {
+                    'embedder': embedder,
+                    'normal_latents': [],
+                    'pca_basis': None,
+                    'pca_mean': None,
+                    'pca_complement': None,
+                    'angle_buffer': deque(maxlen=4),
+                })
+                z = embedder.embed(feature_vector)
+                qs['normal_latents'].append(z)
+                qs['embedder'] = embedder
+
+                # Rebuild PCA basis + fit per-identity weights once we have enough latents
+                if len(qs['normal_latents']) >= 3:
+                    latents = np.array(qs['normal_latents'])
+                    mean_z  = latents.mean(0)
+                    centered = latents - mean_z
+                    try:
+                        from scipy.linalg import svd as _svd
+                        _, _, Vt = _svd(centered, full_matrices=True,
+                                        check_finite=False, lapack_driver='gesdd')
+                    except Exception:
+                        Vt = np.linalg.qr(
+                            np.random.randn(centered.shape[1], centered.shape[1])
+                        )[0].T
+                    qs['pca_mean']       = mean_z
+                    qs['pca_basis']      = Vt[:3]
+                    qs['pca_complement'] = Vt[3:5]
+
+                    # Fit per-identity fusion weights from normal latents.
+                    # Compute (swap_s, q_dir, coh) for each normal window, then
+                    # set threshold = p95 of resulting confidence scores.
+                    # Weights: constrained softmax so α+β+γ=1, initialized at global prior.
+                    try:
+                        pca_b = Vt[:3]
+                        pca_c = Vt[3:5]
+                        sigs  = []
+                        angle_buf_fit = deque(maxlen=4)
+                        for z_n in latents:
+                            sf_n  = latent_swap_fidelity(z_n, pca_b, mean_z)
+                            qd_n  = latent_directionality(z_n, mean_z, pca_c)
+                            ang_n = latent_deviation_angle(z_n, mean_z, pca_c)
+                            angle_buf_fit.append(ang_n)
+                            coh_n = latent_phase_coherence(list(angle_buf_fit))
+                            swap_s_n = max(0.0, 1.0 - sf_n)
+                            itf_n = coh_n * float(np.sqrt(max(swap_s_n * qd_n, 0.0)))
+                            sigs.append([swap_s_n, qd_n, itf_n])
+                        sigs = np.array(sigs, dtype=np.float32)
+
+                        # Global prior (from CERT r4.2 experiment)
+                        PRIOR = np.array([0.263, 0.285, 0.451], dtype=np.float32)
+                        # Weighted ridge fit: minimise ||X·w - 0||² + λ||w - prior||²
+                        # All normal windows should score near 0, so target = 0 vector.
+                        # Ridge towards prior prevents overfitting on small N.
+                        lam = 2.0
+                        A   = sigs.T @ sigs + lam * np.eye(3)
+                        b   = lam * PRIOR
+                        w   = np.linalg.solve(A, b)
+                        w   = np.clip(w, 0.0, None)
+                        w_sum = w.sum()
+                        if w_sum > 1e-6:
+                            w /= w_sum          # normalize so α+β+γ=1
+                        else:
+                            w = PRIOR.copy()
+
+                        # Per-identity threshold = p95 of normal confidence scores
+                        confs_normal = np.clip(sigs @ w, 0.0, 1.0)
+                        thresh = float(np.percentile(confs_normal, 95)) if len(confs_normal) >= 3 else 0.1854
+
+                        qs['weights']   = tuple(float(x) for x in w)   # (α, β, γ)
+                        qs['threshold'] = thresh
+                    except Exception:
+                        qs['weights']   = (0.263, 0.285, 0.451)
+                        qs['threshold'] = 0.1854
+            except Exception:
+                pass
+
+        self.save_state()
 
     def get_detection_summary(self) -> Dict:
         """Get summary statistics matching the paper's detection funnel."""
@@ -310,15 +510,29 @@ class TAARAnalyzer:
         }
 
     def save_state(self):
-        """Persist all memory bases and state."""
+        """Persist all memory bases and quantum state."""
+        # Serialise per-identity quantum state (PCA arrays + fitted weights + threshold)
+        # Embedder object is excluded — reconnected at load time from the live embedder.
+        quantum_state_serial = {}
+        for iid, qs in self._quantum_state.items():
+            entry = {
+                'weights':   list(qs['weights'])   if qs.get('weights')   else [0.263, 0.285, 0.451],
+                'threshold': qs.get('threshold', 0.1854),
+            }
+            if qs.get('pca_basis') is not None:
+                entry['pca_basis']      = qs['pca_basis'].tolist()
+                entry['pca_mean']       = qs['pca_mean'].tolist()
+                entry['pca_complement'] = qs['pca_complement'].tolist()
+            if qs.get('normal_latents'):
+                # Keep up to last 50 normal latents for re-fitting on next train run
+                entry['normal_latents'] = [z.tolist() for z in qs['normal_latents'][-50:]]
+            quantum_state_serial[iid] = entry
+
         state = {
-            'memory_bases': {
-                k: v.to_dict() for k, v in self.memory_bases.items()
-            },
+            'memory_bases': {k: v.to_dict() for k, v in self.memory_bases.items()},
             'stats': self.stats,
-            'quantum_memory_residuals': [
-                r.tolist() for r in self.quantum_validator.memory_residuals
-            ]
+            'quantum_memory_residuals': [r.tolist() for r in self.quantum_validator.memory_residuals],
+            'quantum_state': quantum_state_serial,
         }
         path = os.path.join(self.model_dir, 'taara_state.json')
         with open(path, 'w') as f:
@@ -337,8 +551,98 @@ class TAARAnalyzer:
             self.stats = state.get('stats', self.stats)
             for r in state.get('quantum_memory_residuals', []):
                 self.quantum_validator.add_to_memory(np.array(r))
+            # Restore quantum state — embedder is None until reconnected by server
+            for iid, qs_data in state.get('quantum_state', {}).items():
+                qs = {
+                    'embedder':       None,   # reconnected at first inference call
+                    'normal_latents': [np.array(z) for z in qs_data.get('normal_latents', [])],
+                    'pca_basis':      np.array(qs_data['pca_basis'])      if 'pca_basis'      in qs_data else None,
+                    'pca_mean':       np.array(qs_data['pca_mean'])       if 'pca_mean'       in qs_data else None,
+                    'pca_complement': np.array(qs_data['pca_complement']) if 'pca_complement' in qs_data else None,
+                    'angle_buffer':   deque(maxlen=4),
+                    'weights':        tuple(qs_data.get('weights',   [0.263, 0.285, 0.451])),
+                    'threshold':      qs_data.get('threshold', 0.1854),
+                }
+                self._quantum_state[iid] = qs
+            print(f"[TAARAnalyzer] Loaded state: {len(self.memory_bases)} identities, "
+                  f"{len(self._quantum_state)} quantum states")
         except Exception as e:
             print(f"[TAARAnalyzer] Error loading state: {e}")
+
+    def reconnect_embedder(self, embedder):
+        """Reconnect embedder to all restored quantum states after server startup."""
+        for qs in self._quantum_state.values():
+            if qs['embedder'] is None:
+                qs['embedder'] = embedder
+
+    def rebuild_quantum_state_if_missing(self, embedder):
+        """
+        For each identity that has a memory basis but no quantum state,
+        rebuild the PCA subspace from the stored basis vectors.
+        Called once at startup to handle state files written before quantum state saving was added.
+        """
+        if not embedder or not embedder.is_ready():
+            return
+        rebuilt = False
+        for iid, basis in self.memory_bases.items():
+            if iid in self._quantum_state and self._quantum_state[iid].get('pca_basis') is not None:
+                continue  # already have PCA
+            if len(basis.basis_vectors) < 3:
+                continue
+            try:
+                raw = np.array(basis.basis_vectors, dtype=np.float32)
+                latents = np.array([embedder.embed(r) for r in raw])
+                mean_z = latents.mean(0)
+                centered = latents - mean_z
+                try:
+                    from scipy.linalg import svd as _svd
+                    _, _, Vt = _svd(centered, full_matrices=True, check_finite=False, lapack_driver='gesdd')
+                except Exception:
+                    Vt = np.linalg.qr(np.random.randn(centered.shape[1], centered.shape[1]))[0].T
+                pca_basis = Vt[:3]
+                pca_complement = Vt[3:5]
+
+                # Fit weights
+                PRIOR = np.array([0.263, 0.285, 0.451], dtype=np.float32)
+                sigs = []
+                angle_buf = deque(maxlen=4)
+                for z_n in latents:
+                    sf_n  = latent_swap_fidelity(z_n, pca_basis, mean_z)
+                    qd_n  = latent_directionality(z_n, mean_z, pca_complement)
+                    ang_n = latent_deviation_angle(z_n, mean_z, pca_complement)
+                    angle_buf.append(ang_n)
+                    coh_n = latent_phase_coherence(list(angle_buf))
+                    swap_s_n = max(0.0, 1.0 - sf_n)
+                    itf_n = coh_n * float(np.sqrt(max(swap_s_n * qd_n, 0.0)))
+                    sigs.append([swap_s_n, qd_n, itf_n])
+                sigs = np.array(sigs, dtype=np.float32)
+                lam = 2.0
+                A = sigs.T @ sigs + lam * np.eye(3)
+                w = np.linalg.solve(A, lam * PRIOR)
+                w = np.clip(w, 0.0, None)
+                if w.sum() > 1e-6:
+                    w /= w.sum()
+                else:
+                    w = PRIOR.copy()
+                confs = np.clip(sigs @ w, 0.0, 1.0)
+                thresh = float(np.percentile(confs, 95)) if len(confs) >= 3 else 0.1854
+
+                self._quantum_state[iid] = {
+                    'embedder':       embedder,
+                    'normal_latents': list(latents[-50:]),
+                    'pca_basis':      pca_basis,
+                    'pca_mean':       mean_z,
+                    'pca_complement': pca_complement,
+                    'angle_buffer':   deque(maxlen=4),
+                    'weights':        tuple(float(x) for x in w),
+                    'threshold':      thresh,
+                }
+                print(f"[TAARAnalyzer] Rebuilt quantum state for {iid}: w={tuple(round(x,3) for x in w)}, thresh={thresh:.4f}")
+                rebuilt = True
+            except Exception as e:
+                print(f"[TAARAnalyzer] Could not rebuild quantum state for {iid}: {e}")
+        if rebuilt:
+            self.save_state()
 
     def reset(self):
         """Reset all state for fresh analysis."""

@@ -28,32 +28,39 @@ from datetime import datetime
 
 TRAINING_MODES = {
     'quick_demo': {
-        'name': 'Quick Demo Training',
-        'duration_minutes': 2,
-        'interval_seconds': 1,
-        'expected_samples': 120,
-        'description': 'Rapid 2-minute training with 1-second snapshots. For live demonstrations.'
+        'name': 'Quick Training',
+        'duration_minutes': 1,
+        'interval_seconds': 5,
+        'expected_samples': 12,
+        'description': 'Fast ~1-minute finetune: collects samples from TaaraWare buffer, builds quantum subspace.'
     },
     'demo': {
         'name': 'Demo Training',
-        'duration_minutes': 5,
+        'duration_minutes': 2,
         'interval_seconds': 10,
-        'expected_samples': 30,
-        'description': '5-minute training with 10-second intervals. For thorough demos.'
+        'expected_samples': 12,
+        'description': '2-minute training for demonstrations.'
     },
     'standard': {
         'name': 'Standard Training',
-        'duration_minutes': 15,
-        'interval_seconds': 30,
-        'expected_samples': 30,
-        'description': '15-minute training for initial deployment.'
+        'duration_minutes': 3,
+        'interval_seconds': 15,
+        'expected_samples': 12,
+        'description': '~3-minute finetune: AE finetune + IsolationForest + quantum subspace. Recommended.'
     },
     'full': {
         'name': 'Full Training',
-        'duration_minutes': 60,
+        'duration_minutes': 10,
         'interval_seconds': 30,
-        'expected_samples': 120,
-        'description': '1-hour comprehensive training for production environments.'
+        'expected_samples': 20,
+        'description': '10-minute comprehensive training for production environments.'
+    },
+    'deep': {
+        'name': 'Deep Training',
+        'duration_minutes': 20,
+        'interval_seconds': 30,
+        'expected_samples': 40,
+        'description': '~20-minute deep finetune: maximum samples, 20 AE epochs, full quantum subspace rebuild.'
     },
     'continuous': {
         'name': 'Continuous Training',
@@ -238,17 +245,46 @@ class TrainingManager:
             self.training_state['baseline_collected'] = True
             self.training_state['baseline_samples'] = len(baseline_array)
 
-            self.training_state['current_phase'] = 'Phase 2: Training autoencoder...'
+            self.training_state['current_phase'] = 'Phase 2: Finetuning autoencoder...'
             self.training_state['progress'] = 65.0
+            host = getattr(platform, 'config', {}).get('host', 'unknown')
             try:
-                ae_result = embedder.train(
-                    baseline_array,
-                    epochs=50 if mode in ['quick_demo', 'demo'] else 100,
-                    lr=0.001,
-                    batch_size=min(32, max(4, len(baseline_array) // 4))
+                from components.node_identity_db import (
+                    load_node_model, save_node_model, append_baseline, record_training
                 )
-                if ae_result.get('status') == 'success':
+
+                # Load the most adapted model for this node before finetuning.
+                # load_node_model is a no-op if no node model exists yet — embedder
+                # keeps the global pretrained model in that case.
+                loaded = load_node_model(host, embedder)
+                if loaded:
+                    self.training_state['current_phase'] = (
+                        f'Phase 2: Loaded node model for {host}, finetuning...'
+                    )
+
+                finetune_epochs = (
+                    10 if mode in ['quick_demo', 'demo']
+                    else 20 if mode == 'deep'
+                    else 15
+                )
+
+                if embedder.is_ready():
+                    ae_result = embedder.finetune(baseline_array, epochs=finetune_epochs, lr=0.0005)
+                else:
+                    # No model at all — first ever run on this machine
+                    ae_result = embedder.train(
+                        baseline_array,
+                        epochs=50 if mode in ['quick_demo', 'demo'] else 100,
+                        lr=0.001,
+                        batch_size=min(32, max(4, len(baseline_array) // 4))
+                    )
+
+                if ae_result.get('status') in ('success', 'skipped'):
                     self.training_state['embedder_trained'] = True
+                    # Persist updated model and baseline samples to node folder
+                    save_node_model(host, embedder)
+                    append_baseline(host, baseline_array)
+                    record_training(host, mode, len(baseline_array), ae_result)
             except Exception as e:
                 self.training_state['errors'].append(f'Autoencoder error: {str(e)[:100]}')
 
@@ -259,17 +295,25 @@ class TrainingManager:
                 det_result = detector.train(embeddings, contamination=0.1)
                 if det_result.get('status') == 'success':
                     self.training_state['anomaly_detector_trained'] = True
+                # Save mean normal latent for fidelity comparison at inference
+                import json as _json
+                mean_latent = embeddings.mean(axis=0).tolist()
+                with open(os.path.join(self.model_dir, 'normal_latent.json'), 'w') as f:
+                    _json.dump(mean_latent, f)
             except Exception as e:
                 self.training_state['errors'].append(f'Detector error: {str(e)[:100]}')
 
             self.training_state['current_phase'] = 'Phase 4: Building TAARA memory basis...'
             self.training_state['progress'] = 90.0
             try:
-                identity_id = f'{platform.platform_type}_system'
+                # Use the same identity key as the live monitoring path:
+                # taaraware_<host> so training and monitoring share the same basis.
+                host = getattr(platform, 'config', {}).get('host', platform.platform_type)
+                identity_id = f'taaraware_{host}'
                 for features in self.baseline_data:
-                    taara_analyzer.analyze(identity_id, features, baseline_alert=False)
+                    taara_analyzer.add_training_observation(features, identity_id,
+                                                             embedder=embedder)
                 self.training_state['taara_trained'] = True
-                taara_analyzer.save_state()
             except Exception as e:
                 self.training_state['errors'].append(f'TAARA error: {str(e)[:100]}')
 
@@ -379,8 +423,8 @@ class TrainingManager:
             return {'status': 'error', 'message': 'No baseline data found'}
 
         baseline_data = np.load(baseline_path)
-        if len(baseline_data) < 10:
-            return {'status': 'error', 'message': f'Insufficient data: {len(baseline_data)} samples'}
+        if len(baseline_data) < 3:
+            return {'status': 'error', 'message': f'Insufficient data: {len(baseline_data)} samples (need at least 3)'}
 
         if self.embedder:
             ae_result = self.embedder.train(baseline_data, epochs=100, lr=0.001)

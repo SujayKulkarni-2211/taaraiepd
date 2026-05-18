@@ -567,6 +567,9 @@ if __name__ == "__main__":
 '''
 
 
+CURRENT_AGENT_VERSION = "2.1.0"
+
+
 class TaaraWareManager:
     """Manages TaaraWare agent deployment and communication."""
 
@@ -754,6 +757,13 @@ WantedBy=multi-user.target
                 "python3 -c \"import json; d=json.load(open('/opt/taaraware/data/feature_buffer.json')); print(len(d))\" 2>/dev/null"
             )
 
+            # Read deployed version from remote config.json
+            ver_out, _, _ = platform.execute_command(
+                "python3 -c \"import json; print(json.load(open('/opt/taaraware/config.json')).get('version','unknown'))\" 2>/dev/null"
+            )
+            deployed_version = ver_out.strip() or 'unknown'
+            update_available = (deployed_version != CURRENT_AGENT_VERSION and deployed_version != 'unknown')
+
             return {
                 'status': status_out.strip(),
                 'pid': pid_out.strip(),
@@ -761,6 +771,9 @@ WantedBy=multi-user.target
                 'buffer_size': int(buffer_out.strip()) if buffer_out.strip().isdigit() else 0,
                 'connected': True,
                 'os': 'macOS' if is_macos else 'Linux',
+                'deployed_version': deployed_version,
+                'current_version': CURRENT_AGENT_VERSION,
+                'update_available': update_available,
             }
         except Exception as e:
             return {'status': 'error', 'error': str(e), 'connected': False}
@@ -792,6 +805,62 @@ WantedBy=multi-user.target
         except Exception:
             pass
         return []
+
+    def update_agent(self, platform) -> Dict:
+        """
+        Gracefully update the deployed TaaraWare agent to CURRENT_AGENT_VERSION.
+        Stops the running agent, pushes new script + config, restarts.
+        Buffer data is preserved — only the agent script is replaced.
+        """
+        result = {'success': False, 'message': '', 'version': CURRENT_AGENT_VERSION}
+        if not platform.connected or platform.platform_type != 'ssh':
+            result['message'] = 'Platform not connected'
+            return result
+        try:
+            uname_out, _, _ = platform.execute_command("uname -s")
+            is_macos = uname_out.strip().lower() == 'darwin'
+
+            # Stop gracefully
+            if is_macos:
+                platform.execute_command("launchctl stop com.taara.taaraware 2>/dev/null || true")
+            else:
+                platform.execute_command("systemctl stop taaraware 2>/dev/null || pkill -f taaraware_agent.py 2>/dev/null || true")
+
+            import time as _time
+            _time.sleep(2)
+
+            # Push updated agent script
+            platform.execute_command(f"cat > /opt/taaraware/taaraware_agent.py << 'AGENTEOF'\n{TAARAWARE_AGENT_SCRIPT}\nAGENTEOF")
+            platform.execute_command("chmod +x /opt/taaraware/taaraware_agent.py")
+
+            # Update version in remote config (preserve all other settings)
+            platform.execute_command(
+                f"python3 -c \""
+                f"import json; c=json.load(open('/opt/taaraware/config.json')); "
+                f"c['version']='{CURRENT_AGENT_VERSION}'; "
+                f"json.dump(c,open('/opt/taaraware/config.json','w'))"
+                f"\" 2>/dev/null"
+            )
+
+            # Restart
+            if is_macos:
+                platform.execute_command("launchctl start com.taara.taaraware 2>/dev/null || true")
+            else:
+                platform.execute_command("systemctl start taaraware 2>/dev/null || python3 /opt/taaraware/taaraware_agent.py &")
+
+            _time.sleep(2)
+            status = self.check_agent_status(platform)
+            result['success'] = True
+            result['message'] = f"Agent updated to v{CURRENT_AGENT_VERSION}. Status: {status.get('status', 'unknown')}"
+            result['agent_status'] = status
+
+            host = platform.config.get('host', 'unknown')
+            if host in self.deployed_agents:
+                self.deployed_agents[host]['version'] = CURRENT_AGENT_VERSION
+            self._save_state()
+        except Exception as e:
+            result['message'] = str(e)
+        return result
 
     def get_all_alerts(self) -> List[Dict]:
         """Get all alerts from all deployed agents."""

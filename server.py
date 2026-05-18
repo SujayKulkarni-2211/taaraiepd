@@ -50,6 +50,10 @@ def _init_systems():
         scaler_path="models/dna_scaler.json"
     )
     _state["detector"] = MLAnomalyDetector(model_path="models/isolation_forest.pkl")
+    # Reconnect embedder to any quantum states restored from disk (PCA bases survive restarts)
+    _state["taara_analyzer"].reconnect_embedder(_state["embedder"])
+    # If memory bases exist but quantum state was not saved (old state file), rebuild it
+    _state["taara_analyzer"].rebuild_quantum_state_if_missing(_state["embedder"])
 
     memory = BehaviorMemory(memory_path="models/behavior_memory.json")
     _state["training_mgr"] = TrainingManager(
@@ -92,6 +96,7 @@ app.add_middleware(
 _state: Dict[str, Any] = {
     "platform": None,
     "platform_type": None,
+    "connected_host": None,
     "taara_analyzer": None,
     "embedder": None,
     "detector": None,
@@ -105,9 +110,14 @@ _state: Dict[str, Any] = {
     "active_alert": None,
     "training_state": {},
     "last_code_scan": None,
+    # Status cache — SSH round-trip is slow; cache result for 30s
+    "_status_cache": None,
+    "_status_cache_ts": 0.0,
+    "_status_cache_host": None,
 }
 
 _lock = threading.Lock()
+_STATUS_CACHE_TTL = 30.0  # seconds between SSH buffer fetches
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -137,6 +147,13 @@ class TrainRequest(BaseModel):
 class ExecuteRequest(BaseModel):
     command: str
     language: str = "bash"
+    description: str = ""
+    stdin_input: Optional[str] = None  # piped as stdin if the command prompts for it
+
+
+class StdinRequest(BaseModel):
+    command: str
+    stdin_input: str
     description: str = ""
 
 
@@ -219,13 +236,30 @@ def connect(req: ConnectRequest):
 
         _state["platform"] = platform
         _state["platform_type"] = req.platform_type
+        _state["connected_host"] = req.host
 
         if req.api_key:
             from components.llm_service import LLMService
             _state["llm_service"] = LLMService(req.api_key)
 
-        _state["action_logger"].log("system", "connect",
-                                    f"Connected to {req.host}", severity="info")
+        # Restore full node session: finetuned model + quantum state + meta
+        embedder = _state.get("embedder")
+        taara_analyzer = _state.get("taara_analyzer")
+        if embedder and taara_analyzer and req.host:
+            from components.node_identity_db import restore_node_session
+            restore_summary = restore_node_session(req.host, embedder, taara_analyzer)
+            _state["action_logger"].log(
+                "system", "connect",
+                f"Connected to {req.host} | node={restore_summary['node_id']} "
+                f"connects={restore_summary['connect_count']} "
+                f"model={'restored' if restore_summary['model_loaded'] else 'pretrained'} "
+                f"baseline={restore_summary['baseline_samples']}s "
+                f"training_runs={restore_summary['training_runs']}",
+                severity="info"
+            )
+        else:
+            _state["action_logger"].log("system", "connect",
+                                        f"Connected to {req.host}", severity="info")
 
         info = platform.get_platform_info()
         return {"success": True, "platform_type": req.platform_type, "info": info}
@@ -239,12 +273,21 @@ def connect(req: ConnectRequest):
 @app.post("/api/disconnect")
 def disconnect():
     if _state["platform"]:
+        host = _state.get("connected_host")
+        embedder = _state.get("embedder")
+        taara_analyzer = _state.get("taara_analyzer")
+        action_logger = _state.get("action_logger")
+        # Snapshot everything for this node before clearing session state
+        if host and embedder and taara_analyzer:
+            from components.node_identity_db import snapshot_node_session
+            snapshot_node_session(host, embedder, taara_analyzer, action_logger)
         try:
             _state["platform"].disconnect()
         except Exception:
             pass
         _state["platform"] = None
         _state["platform_type"] = None
+        _state["connected_host"] = None
         _state["analysis_results"] = None
         _state["active_alert"] = None
     return {"success": True}
@@ -303,8 +346,9 @@ def analyze(req: AnalyzeRequest):
         ], dtype=np.float32)
         if len(fv) < 4:
             fv = np.pad(fv, (0, 4 - len(fv)))
+        _scan_host = platform.config.get("host", ptype) if hasattr(platform, "config") else ptype
         quantum_risk = taara_analyzer.get_quantum_risk_assessment(
-            fv, identity_id=f"{ptype}_system"
+            fv, identity_id=f"taaraware_{_scan_host}"
         )
         results["quantum_risk"] = quantum_risk
     except Exception as e:
@@ -515,13 +559,169 @@ def deploy_taaraware(req: DeployRequest):
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STATUS (live feature vector from TaaraWare agent)
+# SSH fetches are cached for 30s and refreshed in a background thread so the
+# HTTP handler always returns immediately without blocking on network I/O.
 # ═══════════════════════════════════════════════════════════════════════════════
+
+FEATURE_NAMES_19 = [
+    "cpu_usage", "memory_usage", "disk_usage",
+    "proc_spawn_rate", "proc_root_ratio", "proc_cmd_entropy",
+    "net_outbound_conn_rate", "net_unique_dst_ips", "net_unique_dst_ports",
+    "net_port_entropy", "net_failed_conn_ratio",
+    "failed_logins_1h", "new_processes_1h",
+    "suspicious_connections", "privilege_escalations",
+    "temporal_rhythm_deviation", "causal_chain_novelty",
+    "concealment_signal", "proc_cmd_novelty",
+]
+RAW_EXTRA_FIELDS = [
+    "load_avg_1m", "load_avg_5m", "load_avg_15m",
+    "active_connections", "process_count",
+    "proc_short_lived_ratio", "proc_uid_diversity",
+    "network_bytes_sent", "network_bytes_recv",
+]
+
+_status_refresh_lock = threading.Lock()
+_status_refreshing   = False
+
+
+def _do_status_refresh():
+    """Background worker: fetch SSH buffer, run inference, update cache."""
+    global _status_refreshing
+    try:
+        platform      = _state["platform"]
+        taaraware_mgr = _state["taaraware_mgr"]
+        taara_analyzer = _state.get("taara_analyzer")
+        embedder       = _state.get("embedder")
+        detector       = _state.get("detector")
+        host           = platform.config.get("host", "unknown") if platform else "unknown"
+
+        agent_status = taaraware_mgr.check_agent_status(platform)
+        buffer       = taaraware_mgr.collect_remote_data(platform)
+
+        feature_vector = None
+        novelty_result = None
+
+        if buffer:
+            features = buffer[-1].get("features") or buffer[-1]
+            fv = np.array([float(features.get(k, 0.0)) for k in FEATURE_NAMES_19], dtype=np.float32)
+            feature_vector = {k: float(features.get(k, 0.0)) for k in FEATURE_NAMES_19}
+            for k in RAW_EXTRA_FIELDS:
+                if k in features:
+                    feature_vector[k] = float(features[k])
+
+            classical_anomaly = False
+            anomaly_score_val = recon_error = latent_fidelity = None
+            if embedder and detector and embedder.is_trained and detector.is_ready():
+                try:
+                    recon_error    = embedder.reconstruction_error(fv)
+                    current_latent = embedder.embed(fv)
+                    nl_path = os.path.join('models', 'normal_latent.json')
+                    if os.path.exists(nl_path):
+                        with open(nl_path) as _f:
+                            normal_latent = np.array(json.load(_f), dtype=np.float32)
+                        cos_sim = float(np.dot(current_latent, normal_latent) /
+                                        (np.linalg.norm(current_latent) * np.linalg.norm(normal_latent) + 1e-8))
+                        latent_fidelity = (cos_sim + 1) / 2
+                    if_result      = detector.detect(current_latent)
+                    anomaly_score_val = if_result.get("anomaly_score", 0.0)
+                    if_anomaly     = if_result.get("is_anomaly", False)
+                    classical_anomaly = if_anomaly and (recon_error or 0) > 0.05 and (latent_fidelity or 1) < 0.6
+                    feature_vector.update({"anomaly_score": anomaly_score_val, "is_anomaly": classical_anomaly,
+                                           "recon_error": recon_error, "latent_fidelity": latent_fidelity})
+                except Exception:
+                    pass
+
+            if taara_analyzer:
+                try:
+                    identity = f"taaraware_{host}"
+                    qr       = taara_analyzer.get_quantum_risk_assessment(fv, identity_id=identity, embedder=embedder)
+                    qc       = qr.get("quantum_confidence")
+                    novelty_result = {
+                        "f_min": qr.get("f_min"), "novelty_score": qr.get("risk_score", 0),
+                        "is_novel": qr.get("is_directionally_novel", False),
+                        "severity": qr.get("severity", "BOOTSTRAPPING"),
+                        "basis_size": qr.get("basis_size", 0),
+                        "residual_norm": qr.get("residual_norm", 0),
+                        "quantum_novelty": qr.get("quantum_novelty", 0),
+                        "classical_anomaly": classical_anomaly,
+                        "anomaly_score": anomaly_score_val, "recon_error": recon_error,
+                        "latent_fidelity": latent_fidelity, "note": qr.get("note", ""),
+                        "swap_fidelity": qr.get("swap_fidelity"),
+                        "q_directionality": qr.get("q_directionality"),
+                        "phase_coherence": qr.get("phase_coherence"),
+                        "quantum_confidence": qc,
+                    }
+                    basis_mature = qr.get("basis_size", 0) >= 3
+                    alert_cond   = basis_mature and qc is not None and qc > 0.1854
+                    if alert_cond:
+                        _state["active_alert"] = {
+                            "timestamp": time.time(), "score": qr.get("risk_score", 0),
+                            "f_min": qr.get("f_min"), "features": feature_vector, "host": host,
+                            "classical_confirmed": classical_anomaly,
+                            "quantum_confidence": qc,
+                            "swap_fidelity": qr.get("swap_fidelity"),
+                            "q_directionality": qr.get("q_directionality"),
+                            "phase_coherence": qr.get("phase_coherence"),
+                        }
+                except Exception:
+                    pass
+
+        # Fallback: no live data yet — run inference on zero probe so stats show immediately
+        if novelty_result is None and taara_analyzer:
+            identity  = f"taaraware_{host}"
+            basis_obj = taara_analyzer.memory_bases.get(identity)
+            bs        = len(basis_obj.basis_vectors) if basis_obj else 0
+            probe     = (np.mean(basis_obj.basis_vectors, axis=0).astype(np.float32)
+                         if basis_obj and len(basis_obj.basis_vectors) >= 1
+                         else np.zeros(19, dtype=np.float32))
+            try:
+                qr = taara_analyzer.get_quantum_risk_assessment(probe, identity_id=identity, embedder=embedder)
+                novelty_result = {
+                    "basis_size": bs, "f_min": qr.get("f_min"),
+                    "swap_fidelity": qr.get("swap_fidelity"),
+                    "q_directionality": qr.get("q_directionality"),
+                    "phase_coherence": qr.get("phase_coherence"),
+                    "quantum_confidence": qr.get("quantum_confidence"),
+                    "severity": qr.get("severity", "BOOTSTRAPPING"),
+                    "note": qr.get("note", ""),
+                }
+            except Exception:
+                novelty_result = {"basis_size": bs, "f_min": None,
+                                  "swap_fidelity": None, "q_directionality": None,
+                                  "phase_coherence": None, "quantum_confidence": None}
+
+        training_mgr = _state["training_mgr"]
+        _state["_status_cache"] = {
+            "connected": True,
+            "agent_status": agent_status,
+            "feature_vector": feature_vector,
+            "novelty": novelty_result,
+            "training_status": training_mgr.get_status() if training_mgr else {},
+            "alert": _state.get("active_alert"),
+        }
+        _state["_status_cache_ts"]   = time.time()
+        _state["_status_cache_host"] = host
+
+        # Persist quantum state to disk after every successful refresh with real signals
+        # so values survive crashes/restarts without needing a clean disconnect.
+        if (novelty_result and novelty_result.get("swap_fidelity") is not None
+                and taara_analyzer and embedder):
+            try:
+                from components.node_identity_db import snapshot_quantum_state
+                snapshot_quantum_state(host, taara_analyzer)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[status refresh] error: {e}")
+    finally:
+        global _status_refreshing
+        _status_refreshing = False
+
 
 @app.get("/api/status")
 def get_status():
-    platform = _state["platform"]
-    taaraware_mgr = _state["taaraware_mgr"]
-    training_mgr = _state["training_mgr"]
+    platform      = _state["platform"]
+    training_mgr  = _state["training_mgr"]
 
     if not platform or not platform.connected:
         return {
@@ -531,94 +731,57 @@ def get_status():
             "training_status": training_mgr.get_status() if training_mgr else {},
         }
 
-    agent_status = taaraware_mgr.check_agent_status(platform)
+    host = platform.config.get("host", "unknown")
+    now  = time.time()
+    cache_age  = now - _state["_status_cache_ts"]
+    cache_host = _state["_status_cache_host"]
 
-    # Try to get latest feature vector from buffer
-    feature_vector = None
+    # Kick off a background refresh if cache is stale (>30s) or for a different host
+    global _status_refreshing
+    if (cache_age > _STATUS_CACHE_TTL or cache_host != host) and not _status_refreshing:
+        _status_refreshing = True
+        t = threading.Thread(target=_do_status_refresh, daemon=True)
+        t.start()
+
+    # Return cached result immediately — never block on SSH
+    cached = _state.get("_status_cache")
+    if cached and cache_host == host:
+        # Always inject the freshest alert and training status (these are in-memory, no I/O)
+        cached = dict(cached)
+        cached["alert"]           = _state.get("active_alert")
+        cached["training_status"] = training_mgr.get_status() if training_mgr else {}
+        return cached
+
+    # Very first call before any refresh completes: return minimal response with quantum signals
+    taara_analyzer = _state.get("taara_analyzer")
+    embedder       = _state.get("embedder")
     novelty_result = None
-    try:
-        buffer = taaraware_mgr.collect_remote_data(platform)
-        if buffer:
-            latest = buffer[-1]
-            # Buffer entries store fields directly (no "features" wrapper)
-            features = latest.get("features") or latest
-
-            # Canonical 17-dim feature names for quantum/ML pipeline
-            FEATURE_NAMES = [
-                "cpu_usage", "memory_usage", "disk_usage",
-                "proc_spawn_rate", "proc_root_ratio", "proc_cmd_entropy",
-                "net_outbound_conn_rate", "net_unique_dst_ips", "net_unique_dst_ports",
-                "net_port_entropy", "net_failed_conn_ratio",
-                "failed_logins_1h", "new_processes_1h",
-                "suspicious_connections", "privilege_escalations",
-                "temporal_rhythm_deviation", "causal_chain_novelty",
-            ]
-            # Also expose all raw fields (including concealment_signal, load_avg etc.)
-            RAW_EXTRA = [
-                "concealment_signal", "load_avg_1m", "load_avg_5m", "load_avg_15m",
-                "active_connections", "process_count",
-                "proc_short_lived_ratio", "proc_uid_diversity",
-                "network_bytes_sent", "network_bytes_recv",
-            ]
-
-            fv = np.array([float(features.get(k, 0.0)) for k in FEATURE_NAMES], dtype=np.float32)
-            feature_vector = {k: float(features.get(k, 0.0)) for k in FEATURE_NAMES}
-            for k in RAW_EXTRA:
-                if k in features:
-                    feature_vector[k] = float(features[k])
-
-            embedder = _state["embedder"]
-            detector = _state["detector"]
-            taara_analyzer = _state["taara_analyzer"]
-
-            if embedder and detector:
-                try:
-                    embedding = embedder.encode(fv)
-                    score, is_anomaly = detector.predict(embedding.reshape(1, -1))
-                    feature_vector["anomaly_score"] = float(score[0]) if hasattr(score, "__len__") else float(score)
-                    feature_vector["is_anomaly"] = bool(is_anomaly[0]) if hasattr(is_anomaly, "__len__") else bool(is_anomaly)
-                except Exception:
-                    pass
-
-            if taara_analyzer and len(fv) >= 4:
-                try:
-                    host = platform.config.get("host", "unknown")
-                    identity = f"taaraware_{host}"
-                    # Always run full quantum risk assessment — builds its own basis
-                    # from observations and returns real F_min once bootstrapped.
-                    qr = taara_analyzer.get_quantum_risk_assessment(fv, identity_id=identity)
-                    f_min_live = qr.get("f_min")
-                    is_novel_live = qr.get("is_directionally_novel", False)
-                    severity = qr.get("severity", "BOOTSTRAPPING")
-
-                    novelty_result = {
-                        "f_min": f_min_live,
-                        "novelty_score": qr.get("risk_score", 0),
-                        "is_novel": is_novel_live,
-                        "severity": severity,
-                        "basis_size": qr.get("basis_size", 0),
-                        "residual_norm": qr.get("residual_norm", 0),
-                        "quantum_novelty": qr.get("quantum_novelty", 0),
-                        "note": qr.get("note", ""),
-                    }
-
-                    if is_novel_live and f_min_live is not None and f_min_live < 0.5:
-                        _state["active_alert"] = {
-                            "timestamp": time.time(),
-                            "score": qr.get("risk_score", 0),
-                            "f_min": f_min_live,
-                            "features": feature_vector,
-                            "host": host,
-                        }
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    if taara_analyzer:
+        identity  = f"taaraware_{host}"
+        basis_obj = taara_analyzer.memory_bases.get(identity)
+        bs        = len(basis_obj.basis_vectors) if basis_obj else 0
+        probe     = (np.mean(basis_obj.basis_vectors, axis=0).astype(np.float32)
+                     if basis_obj and len(basis_obj.basis_vectors) >= 1
+                     else np.zeros(19, dtype=np.float32))
+        try:
+            qr = taara_analyzer.get_quantum_risk_assessment(probe, identity_id=identity, embedder=embedder)
+            novelty_result = {
+                "basis_size": bs, "f_min": qr.get("f_min"),
+                "swap_fidelity": qr.get("swap_fidelity"),
+                "q_directionality": qr.get("q_directionality"),
+                "phase_coherence": qr.get("phase_coherence"),
+                "quantum_confidence": qr.get("quantum_confidence"),
+                "severity": qr.get("severity", "BOOTSTRAPPING"),
+            }
+        except Exception:
+            novelty_result = {"basis_size": bs, "f_min": None,
+                              "swap_fidelity": None, "q_directionality": None,
+                              "phase_coherence": None, "quantum_confidence": None}
 
     return {
         "connected": True,
-        "agent_status": agent_status,
-        "feature_vector": feature_vector,
+        "agent_status": {"status": "checking"},
+        "feature_vector": None,
         "novelty": novelty_result,
         "training_status": training_mgr.get_status() if training_mgr else {},
         "alert": _state.get("active_alert"),
@@ -646,6 +809,21 @@ def train(req: TrainRequest, background_tasks: BackgroundTasks):
             from components.atomic_dna_collector import AtomicDNACollector as _collector_cls
         except ImportError:
             _collector_cls = None
+
+        # Pull whatever the TaaraWare agent has already collected on the server.
+        # That historical buffer IS the normal baseline — train on it directly.
+        # If the buffer has enough samples, Phase 1 is skipped entirely.
+        taaraware_mgr = _state.get("taaraware_mgr")
+        if taaraware_mgr and platform.platform_type == "ssh":
+            try:
+                buffer = taaraware_mgr.collect_remote_data(platform)
+                if buffer:
+                    host = platform.config.get("host", "unknown")
+                    result = training_mgr.load_from_remote_buffer(host, buffer)
+                    print(f"[Train] Buffer pre-load: {result.get('message', '')}")
+            except Exception as e:
+                print(f"[Train] Buffer pre-load failed (will collect fresh): {e}")
+
         training_mgr.start_training(
             mode=req.mode,
             platform=platform,
@@ -700,43 +878,490 @@ def dismiss_alert():
     return {"success": True}
 
 
+@app.get("/api/alerts/investigate")
+def investigate_alert():
+    """Return full investigation context for the active anomaly alert."""
+    active = _state.get("active_alert")
+    if not active:
+        raise HTTPException(status_code=404, detail="No active alert")
+
+    fv = active.get("features", {})
+    f_min = active.get("f_min", 0.0)
+    host = active.get("host", "unknown")
+    score = active.get("score", 0)
+    ts = active.get("timestamp", 0)
+    # V3 validated quantum signals from active alert
+    swap_fidelity_inv    = active.get("swap_fidelity")
+    q_directionality_inv = active.get("q_directionality")
+    phase_coherence_inv  = active.get("phase_coherence")
+    quantum_conf_inv     = active.get("quantum_confidence")
+
+    # Build top signals — features most deviated from typical range
+    SIGNAL_NORMS = {
+        "cpu_usage": 50, "memory_usage": 60, "disk_usage": 40,
+        "proc_spawn_rate": 5, "proc_root_ratio": 0.5, "proc_cmd_entropy": 4.0,
+        "net_outbound_conn_rate": 30, "net_unique_dst_ips": 3, "net_unique_dst_ports": 10,
+        "net_failed_conn_ratio": 0.1, "failed_logins_1h": 0, "causal_chain_novelty": 0.05,
+        "concealment_signal": 0, "temporal_rhythm_deviation": 0,
+    }
+    top_signals = []
+    for k, norm in SIGNAL_NORMS.items():
+        val = fv.get(k)
+        if val is None:
+            continue
+        deviation = abs(val - norm) / max(norm, 0.01)
+        top_signals.append({"key": k, "value": round(float(val), 4), "deviation": round(deviation, 2), "normal": norm})
+    top_signals = sorted(top_signals, key=lambda x: -x["deviation"])[:6]
+
+    # Plain-English quantum explanation — use quantum_confidence (v3) when available
+    if quantum_conf_inv is not None:
+        qc = quantum_conf_inv
+        if qc >= 0.75:
+            zone = "CRITICAL"
+            zone_explain = (
+                f"Quantum confidence = {qc:.4f} (threshold 0.1854). All three quantum signals fire together: "
+                f"SWAP fidelity = {swap_fidelity_inv:.4f} (outside normal subspace), "
+                f"directionality = {q_directionality_inv:.4f} (high complement alignment), "
+                f"phase coherence = {phase_coherence_inv:.4f} (sustained drift pattern). "
+                "The interference fusion formula α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir) places this firmly above the p95 normal threshold. "
+                "High probability of T1078 Valid Account credential misuse."
+            )
+        elif qc >= 0.45:
+            zone = "HIGH"
+            zone_explain = (
+                f"Quantum confidence = {qc:.4f}. Behavioral subspace deviation is sustained and directional. "
+                f"SWAP fidelity = {swap_fidelity_inv:.4f}, directionality = {q_directionality_inv:.4f}, "
+                f"phase coherence = {phase_coherence_inv:.4f}. "
+                "Pattern is consistent with attacker using stolen credentials — moving outside the normal behavioral subspace."
+            )
+        elif qc >= 0.1854:
+            zone = "MEDIUM"
+            zone_explain = (
+                f"Quantum confidence = {qc:.4f} (just above 0.1854 threshold). Early-stage behavioral deviation. "
+                f"SWAP fidelity = {swap_fidelity_inv:.4f}, directionality = {q_directionality_inv:.4f}. "
+                "Consistent with initial reconnaissance or behavioral drift. Monitor for escalation."
+            )
+        else:
+            zone = "LOW"
+            zone_explain = f"Quantum confidence = {qc:.4f}. Low but above threshold. May be transient deviation."
+        divergence_pct = round(qc * 100, 1)
+    else:
+        divergence_pct = round((1.0 - f_min) * 100, 1)
+        if f_min < 0.3:
+            zone = "CRITICAL DIVERGENCE"
+            zone_explain = (
+                f"The server's current behavior is {divergence_pct}% orthogonal to every prior normal state in its memory. "
+                f"F_min = {f_min:.4f} means the quantum state |ψ_t⟩ has less than 30% overlap with any baseline state |ψ_m⟩. "
+                "At this level, the behavioral direction is geometrically new — not just statistically unusual."
+            )
+        elif f_min < 0.5:
+            zone = "UNSAFE DIRECTION"
+            zone_explain = (
+                f"Current behavior is {divergence_pct}% divergent from trained baseline. "
+                f"F_min = {f_min:.4f} is below the 0.5 geometric threshold."
+            )
+        else:
+            zone = "DRIFTING"
+            zone_explain = (
+                f"Current behavior shows {divergence_pct}% deviation. "
+                f"F_min = {f_min:.4f} flagged as novel based on reconstruction error."
+            )
+
+    # LLM reasoning (if available)
+    llm_reasoning = None
+    llm_service = _state.get("llm_service")
+    if llm_service:
+        try:
+            signal_lines = "\n".join(
+                f"  - {s['key']}: {s['value']} (normal ~{s['normal']}, deviation {s['deviation']}x)"
+                for s in top_signals
+            )
+            _qc_str  = f"{quantum_conf_inv:.4f}" if quantum_conf_inv is not None else f"{f_min:.4f}"
+            _sf_str  = f"{swap_fidelity_inv:.4f}" if swap_fidelity_inv is not None else "N/A"
+            _qd_str  = f"{q_directionality_inv:.4f}" if q_directionality_inv is not None else "N/A"
+            _pc_str  = f"{phase_coherence_inv:.4f}" if phase_coherence_inv is not None else "N/A"
+            prompt = (
+                "You are TAARA — Threat-Aware Anomaly Response Architecture.\n"
+                "You use quantum-enhanced behavioral analytics to detect MITRE ATT&CK T1078 (Valid Account abuse).\n\n"
+                "DETECTION METHODOLOGY:\n"
+                "Each SSH session is represented as a 19-dimensional behavioral DNA vector:\n"
+                "  [cpu, memory, disk, proc_spawn_rate, proc_root_ratio, proc_cmd_entropy,\n"
+                "   net_outbound_rate, unique_dst_ips, unique_dst_ports, port_entropy, failed_conn_ratio,\n"
+                "   failed_logins_1h, new_processes_1h, suspicious_connections, privilege_escalations,\n"
+                "   temporal_rhythm_deviation, causal_chain_novelty, concealment_signal, anomaly_score]\n\n"
+                "This vector is encoded as a 3-qubit quantum state |ψ_t⟩ via AmplitudeEmbedding on the\n"
+                "8-dimensional latent space from a pretrained BehavioralAE (19→64→8→64→19, Tanh bottleneck).\n\n"
+                "QUANTUM SIGNALS (V3 fusion: conf = α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir)):\n"
+                f"  swap_s = 1 - F_sub = {_sf_str}  (SWAP fidelity: how far |ψ_t⟩ is from the normal PCA subspace)\n"
+                f"  q_dir  = {_qd_str}  (directionality: is the drift pointing into the complement subspace?)\n"
+                f"  coh    = {_pc_str}  (phase coherence: is the drift sustained across W=4 consecutive windows?)\n"
+                f"  conf   = {_qc_str}  (V3 fusion confidence — threshold = 0.1854 = p95 of normal training)\n"
+                f"  alert zone: {zone}\n\n"
+                "T1078 THREAT MODEL:\n"
+                "An attacker with stolen valid credentials produces behavior that is geometrically novel\n"
+                "to the legitimate user's quantum memory subspace — same global distribution as any user,\n"
+                "but outside THIS user's specific normal subspace. SWAP fidelity < 0.3 = clearly outside.\n"
+                "Phase coherence > 0.8 = drift is SUSTAINED (not random noise). Directionality > 0.3 =\n"
+                "the attacker is consistently exploring new behavioral territory.\n\n"
+                f"ALERT CONTEXT:\n"
+                f"  Host: {host}\n"
+                f"  Risk score: {score:.1f}/100\n"
+                f"  Confidence: {_qc_str} ({zone})\n\n"
+                f"Top deviating behavioral signals:\n{signal_lines}\n\n"
+                "YOUR TASK — answer in 4 sentences, plain English, no jargon:\n"
+                "1. Given the quantum signal values above, what is the most likely cause?\n"
+                "2. Which specific behavioral signals are most suspicious and why?\n"
+                "3. What is the immediate risk to this server?\n"
+                "4. What single action should the operator take right now?\n"
+            )
+            result = llm_service.generate_response(prompt)
+            if isinstance(result, dict) and result.get("success"):
+                llm_reasoning = result.get("raw_response") or result.get("explanation", "")
+            elif isinstance(result, str):
+                llm_reasoning = result
+        except Exception:
+            pass
+
+    # Historical context — has this happened before on this host?
+    taara_analyzer = _state.get("taara_analyzer")
+    prior_anomalies = 0
+    basis_size = 0
+    if taara_analyzer:
+        identity = f"taaraware_{host}"
+        basis = taara_analyzer.memory_bases.get(identity)
+        if basis:
+            basis_size = len(basis.basis_vectors)
+            prior_anomalies = sum(1 for r in basis.residual_history if r > basis.max_residual_norm * 0.8)
+
+    # Classical signal breakdown from the stored alert features
+    recon_error = fv.get("recon_error")
+    latent_fidelity = fv.get("latent_fidelity")
+    anomaly_score = fv.get("anomaly_score")
+    classical_confirmed = active.get("classical_confirmed", False)
+
+    # Bandit-learned recommendations for this quantum context
+    bandit_recommendations = []
+    agent = _state.get("security_agent")
+    if agent and hasattr(agent, "bandit"):
+        try:
+            from components.action_bandit import fidelity_bucket
+            f_ctx = quantum_conf_inv if quantum_conf_inv is not None else (1.0 - f_min if f_min else 0.5)
+            bandit_context = {
+                "f_min": active.get("f_min", 0.5),
+                "platform_type": _state.get("platform_type", "ssh"),
+            }
+            # Standard T1078 candidate actions for this context
+            candidates = [
+                {"action_type": "block_ip",        "description": "Block attacking IP via fail2ban"},
+                {"action_type": "rate_limit_ssh",   "description": "Apply SSH rate limiting (MaxAuthTries 3)"},
+                {"action_type": "isolate_user",     "description": "Lock suspicious user account"},
+                {"action_type": "harden_ssh",       "description": "Apply SSH config hardening"},
+                {"action_type": "restart_service",  "description": "Restart sshd to clear active sessions"},
+                {"action_type": "firewall_rule",    "description": "Add firewall rule to restrict access"},
+            ]
+            ranked = agent.bandit.select_actions(bandit_context, candidates, top_k=3)
+            for rec in ranked:
+                contrast = agent.bandit.get_contrast_insight(rec.get("arm_key", ""))
+                bandit_recommendations.append({
+                    "action_type": rec["action_type"],
+                    "description": rec["description"],
+                    "ucb_score": rec.get("ucb_score", 0),
+                    "approval_rate": rec.get("approval_rate", 0),
+                    "success_rate": rec.get("success_rate", 0),
+                    "times_seen": rec.get("times_seen", 0),
+                    "pre_approved": rec.get("pre_approved", False),
+                    "bandit_rationale": rec.get("bandit_rationale", ""),
+                    "contrast_insight": contrast,
+                    "source": "TAARA Learned" if rec.get("times_seen", 0) > 0 else "Exploring",
+                })
+        except Exception:
+            pass
+
+    return {
+        "host": host,
+        "timestamp": ts,
+        "f_min": f_min,
+        "risk_score": score,
+        "zone": zone,
+        "divergence_pct": divergence_pct,
+        "zone_explain": zone_explain,
+        "top_signals": top_signals,
+        "features": fv,
+        "llm_reasoning": llm_reasoning,
+        "prior_anomalies": prior_anomalies,
+        "basis_size": basis_size,
+        "formula": "α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir)" if quantum_conf_inv is not None else "F_min = min_{m∈M} |⟨ψ_t|ψ_m⟩|²",
+        # V3 validated quantum signals
+        "quantum_confidence": quantum_conf_inv,
+        "swap_fidelity": swap_fidelity_inv,
+        "q_directionality": q_directionality_inv,
+        "phase_coherence": phase_coherence_inv,
+        # Classical signal breakdown
+        "classical_confirmed": classical_confirmed,
+        "recon_error": recon_error,
+        "latent_fidelity": latent_fidelity,
+        "anomaly_score": anomaly_score,
+        # Bandit-learned recommendations for this context
+        "bandit_recommendations": bandit_recommendations,
+    }
+
+
+@app.post("/api/alerts/mark-normal")
+def mark_alert_normal():
+    """
+    Online learning: mark current alert state as normal behavior.
+    Adds the current feature vector to the TAARA memory basis and
+    lowers max_residual_norm so future identical states aren't flagged.
+    """
+    active = _state.get("active_alert")
+    taara_analyzer = _state.get("taara_analyzer")
+    if not active:
+        raise HTTPException(status_code=404, detail="No active alert to mark")
+
+    fv_dict = active.get("features", {})
+    host = active.get("host", "unknown")
+    identity = f"taaraware_{host}"
+
+    FEATURE_NAMES = [
+        "cpu_usage", "memory_usage", "disk_usage",
+        "proc_spawn_rate", "proc_root_ratio", "proc_cmd_entropy",
+        "net_outbound_conn_rate", "net_unique_dst_ips", "net_unique_dst_ports",
+        "net_port_entropy", "net_failed_conn_ratio",
+        "failed_logins_1h", "new_processes_1h",
+        "suspicious_connections", "privilege_escalations",
+        "temporal_rhythm_deviation", "causal_chain_novelty",
+        "concealment_signal", "proc_cmd_novelty",
+    ]
+    fv = np.array([float(fv_dict.get(k, 0.0)) for k in FEATURE_NAMES], dtype=np.float32)
+
+    if taara_analyzer:
+        basis = taara_analyzer.get_or_create_basis(identity)
+        # Add as normal observation — expands what's considered baseline
+        basis.add_observation(fv)
+        # Lower max_residual_norm so this state is no longer above the novelty threshold
+        _, _, residual_norm = basis.reconstruct(fv)
+        if residual_norm < basis.max_residual_norm:
+            basis.max_residual_norm = residual_norm * 1.1  # small margin
+
+    # Clear the alert
+    _state["active_alert"] = None
+
+    # Log the learning event
+    action_logger = _state.get("action_logger")
+    if action_logger:
+        action_logger.log("taara", "mark_normal",
+                          f"Operator marked anomaly on {host} as normal. Basis updated.",
+                          severity="info")
+
+    return {"success": True, "message": f"State marked as normal. TAARA basis updated for {identity}."}
+
+
+@app.post("/api/alerts/ignore")
+def ignore_alert():
+    """
+    Ignore: mark alert as normal AND raise the quantum confidence threshold for this
+    identity so this behavioural pattern is never flagged again.
+    Unlike mark-normal which only adds to the basis, ignore also moves the threshold.
+    """
+    active = _state.get("active_alert")
+    taara_analyzer = _state.get("taara_analyzer")
+    if not active:
+        raise HTTPException(status_code=404, detail="No active alert to ignore")
+
+    fv_dict = active.get("features", {})
+    host = active.get("host", "unknown")
+    identity = f"taaraware_{host}"
+
+    FEATURE_NAMES = [
+        "cpu_usage", "memory_usage", "disk_usage",
+        "proc_spawn_rate", "proc_root_ratio", "proc_cmd_entropy",
+        "net_outbound_conn_rate", "net_unique_dst_ips", "net_unique_dst_ports",
+        "net_port_entropy", "net_failed_conn_ratio",
+        "failed_logins_1h", "new_processes_1h",
+        "suspicious_connections", "privilege_escalations",
+        "temporal_rhythm_deviation", "causal_chain_novelty",
+        "concealment_signal", "proc_cmd_novelty",
+    ]
+    fv = np.array([float(fv_dict.get(k, 0.0)) for k in FEATURE_NAMES], dtype=np.float32)
+
+    if taara_analyzer:
+        basis = taara_analyzer.get_or_create_basis(identity)
+        basis.add_observation(fv)
+        _, _, residual_norm = basis.reconstruct(fv)
+        # Raise threshold so this exact confidence level is ignored going forward
+        if residual_norm > basis.max_residual_norm * 0.5:
+            basis.max_residual_norm = residual_norm * 1.25
+
+        # Also raise the quantum confidence threshold for this identity
+        qs = taara_analyzer.quantum_states.get(identity, {})
+        current_conf = active.get("quantum_confidence") or 0.0
+        if current_conf > 0 and qs:
+            old_thresh = qs.get("threshold", 0.1854)
+            # New threshold = max(current, old) * 1.1 — ignore up to this level
+            qs["threshold"] = max(old_thresh, current_conf) * 1.1
+            taara_analyzer.quantum_states[identity] = qs
+            taara_analyzer.save_state()
+
+    _state["active_alert"] = None
+    action_logger = _state.get("action_logger")
+    if action_logger:
+        action_logger.log("taara", "ignore_alert",
+                          f"Operator ignored anomaly on {host}. Threshold raised.",
+                          severity="info")
+
+    # Feed false-positive signal into contrastive bandit:
+    # Any action that was proposed/approved in this alert context gets a soft negative reward
+    # because the context turned out to be a false positive (operator says: don't flag this)
+    agent = _state.get("security_agent")
+    if agent and hasattr(agent, "bandit"):
+        try:
+            from components.action_bandit import fidelity_bucket
+            current_conf = active.get("quantum_confidence") or 0.0
+            f_m = active.get("f_min", 1.0)
+            bucket = fidelity_bucket(f_m)
+            platform_type = _state.get("platform_type", "ssh")
+            # Record a "false positive" marker — the context looked alarming but wasn't
+            # We do this by recording a failed execution for a generic "alert_fp" pseudo-arm
+            fp_arm_key = f"{bucket}:{platform_type}:alert_false_positive"
+            agent.bandit.record_proposed(fp_arm_key)
+            agent.bandit.record_executed(fp_arm_key, False, {
+                "f_min": f_m,
+                "quantum_confidence": current_conf,
+                "host": host,
+                "platform_type": platform_type,
+                "false_positive": True,
+            })
+        except Exception:
+            pass
+
+    return {"success": True, "message": f"Alert ignored. Quantum threshold raised for {identity}."}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # EXECUTE COMMAND
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _run_command(platform, platform_type, command, language="bash", stdin_input=None):
+    """Execute a command on the platform, optionally piping stdin_input."""
+    result = {"success": False, "stdout": "", "stderr": "", "exit_code": -1, "error": "",
+              "needs_input": False, "input_prompt": ""}
+    try:
+        if platform_type == "ssh":
+            code = command
+            if language == "python":
+                escaped = code.replace("'", "'\\''")
+                code = f"python3 -c '{escaped}'"
+            # If stdin provided, pipe it via echo
+            if stdin_input is not None:
+                safe_input = stdin_input.replace("'", "'\\''")
+                code = f"echo '{safe_input}' | {code}"
+            stdout, stderr, rc = platform.execute_command(code)
+            # Detect if command is still waiting for input
+            input_prompts = ["[y/n]", "[Y/n]", "password:", "enter passphrase",
+                             "are you sure", "(yes/no)", "press enter", "continue? "]
+            combined = (stdout + stderr).lower()
+            if rc == -1 or any(p in combined for p in input_prompts):
+                result["needs_input"] = True
+                result["input_prompt"] = stderr.strip() or stdout.strip()
+            result["stdout"] = stdout
+            result["stderr"] = stderr
+            result["exit_code"] = rc
+            result["success"] = (rc == 0)
+            if rc != 0 and not result["needs_input"]:
+                result["error"] = f"Exit code: {rc}"
+        else:
+            result["stdout"] = f"[{platform_type.upper()}] Command staged:\n{command}"
+            result["success"] = True
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def _bandit_context_from_state() -> Dict:
+    """Extract current quantum context from state for bandit recording."""
+    alert = _state.get("active_alert") or {}
+    return {
+        "f_min": alert.get("f_min", 1.0),
+        "quantum_confidence": alert.get("quantum_confidence"),
+        "swap_fidelity": alert.get("swap_fidelity"),
+        "q_directionality": alert.get("q_directionality"),
+        "phase_coherence": alert.get("phase_coherence"),
+        "host": _state.get("connected_host", "unknown"),
+        "platform_type": _state.get("platform_type", "ssh"),
+    }
+
+
+def _infer_action_type_from_cmd(command: str) -> str:
+    """Infer bandit action_type from a raw shell command."""
+    code = command.lower()
+    if "fail2ban" in code or "banip" in code:
+        return "block_ip"
+    if "systemctl restart" in code or ("service" in code and "restart" in code):
+        return "restart_service"
+    if "systemctl stop" in code:
+        return "terminate_service"
+    if "sshd_config" in code or ("ssh" in code and "config" in code):
+        return "harden_ssh"
+    if "ufw" in code or "iptables" in code or "firewall" in code:
+        return "firewall_rule"
+    if "usermod -L" in code or "passwd -l" in code:
+        return "isolate_user"
+    if "authorized_keys" in code:
+        return "rotate_key"
+    if "rate" in code and "ssh" in code:
+        return "rate_limit_ssh"
+    if "kill " in code:
+        return "kill_process"
+    return "generic"
+
+
+def _bandit_record_execute(command: str, success: bool):
+    """Record command execution outcome in the contrastive bandit."""
+    agent = _state.get("security_agent")
+    if not agent or not hasattr(agent, "bandit"):
+        return
+    from components.action_bandit import fidelity_bucket
+    ctx = _bandit_context_from_state()
+    bucket = fidelity_bucket(ctx.get("f_min", 1.0))
+    platform_type = ctx.get("platform_type", "ssh")
+    action_type = _infer_action_type_from_cmd(command)
+    arm_key = f"{bucket}:{platform_type}:{action_type}"
+    agent.bandit.record_proposed(arm_key)
+    agent.bandit.record_approved(arm_key)
+    agent.bandit.record_executed(arm_key, success, ctx)
+
 
 @app.post("/api/execute")
 def execute_command(req: ExecuteRequest):
     platform = _state["platform"]
     if not platform or not platform.connected:
         raise HTTPException(status_code=400, detail="No platform connected")
-
-    result = {"success": False, "stdout": "", "stderr": "", "exit_code": -1, "error": ""}
-
-    try:
-        if _state["platform_type"] == "ssh":
-            code = req.command
-            if req.language == "python":
-                escaped = code.replace("'", "'\\''")
-                code = f"python3 -c '{escaped}'"
-            stdout, stderr, rc = platform.execute_command(code)
-            result["stdout"] = stdout
-            result["stderr"] = stderr
-            result["exit_code"] = rc
-            result["success"] = (rc == 0)
-            if rc != 0:
-                result["error"] = f"Exit code: {rc}"
-        else:
-            result["stdout"] = f"[{_state['platform_type'].upper()}] Command staged:\n{req.command}"
-            result["success"] = True
-    except Exception as e:
-        result["error"] = str(e)
-
+    result = _run_command(platform, _state["platform_type"], req.command, req.language, req.stdin_input)
     _state["action_logger"].log(
         "execute", "command_execute",
         f"{'OK' if result['success'] else 'FAIL'}: {req.command[:100]}",
         severity="info" if result["success"] else "warning",
         metadata={"command": req.command[:500], "result": result.get("stdout", "")[:500]},
     )
+    # Record in contrastive bandit — operator explicitly ran this command = approved + proposed
+    if not result.get("needs_input"):
+        _bandit_record_execute(req.command, result.get("success", False))
+    return result
+
+
+@app.post("/api/execute/stdin")
+def execute_with_stdin(req: StdinRequest):
+    """Send stdin input to an interactive command."""
+    platform = _state["platform"]
+    if not platform or not platform.connected:
+        raise HTTPException(status_code=400, detail="No platform connected")
+    result = _run_command(platform, _state["platform_type"], req.command, stdin_input=req.stdin_input)
+    _state["action_logger"].log(
+        "execute", "stdin_execute",
+        f"{'OK' if result['success'] else 'FAIL'} (stdin): {req.command[:80]}",
+        severity="info" if result["success"] else "warning",
+    )
+    _bandit_record_execute(req.command, result.get("success", False))
     return result
 
 
@@ -807,7 +1432,12 @@ def get_action_log(limit: int = 100):
 
 
 @app.post("/api/action-log/rollback/{log_id}")
-def rollback_action(log_id: str):
+def rollback_action(log_id: str, execute: bool = False):
+    """
+    Rollback a logged action.
+    Phase 1: POST without execute=true → returns rollback_cmd for approval (or explains why not possible).
+    Phase 2: POST with execute=true → actually runs the rollback_cmd.
+    """
     platform = _state["platform"]
     logger = _state["action_logger"]
 
@@ -816,15 +1446,103 @@ def rollback_action(log_id: str):
         raise HTTPException(status_code=404, detail="Log entry not found")
 
     rollback_cmd = entry.get("rollback_cmd") or entry.get("metadata", {}).get("rollback_cmd")
-    if not rollback_cmd:
-        raise HTTPException(status_code=400, detail="No rollback command available for this action")
+    original_cmd = entry.get("metadata", {}).get("command", "").strip()
 
+    # Entries that were never shell commands (connect, scan, system events) can't be rolled back
+    UNROLLBACKABLE_ACTIONS = {"server_start", "connect", "disconnect", "scan", "taara_analysis",
+                               "demo_start", "train_start", "mark_normal", "ignore_alert"}
+    if entry.get("action") in UNROLLBACKABLE_ACTIONS or not original_cmd:
+        return {
+            "rollbackable": False,
+            "explanation": f"This log entry ({entry.get('action', 'unknown')}) is not a shell command — it is a system event and cannot be reversed.",
+            "alternative": "Only executed shell commands can be rolled back. Run a command from the Custom Actions or Agent tab to get a rollback option.",
+            "original_command": entry.get("details", ""),
+        }
+
+    # If no pre-computed rollback, ask Groq to generate one
+    if not rollback_cmd or rollback_cmd.startswith("# No automatic"):
+        llm = _state.get("llm_service")
+        if llm:
+            try:
+                prompt = (
+                    "You are a Linux system administration assistant.\n"
+                    f"A command was run on a server: {original_cmd}\n\n"
+                    "Task: Generate the exact shell command to UNDO / REVERSE this command's effect.\n\n"
+                    "Rules:\n"
+                    "1. If the command CAN be reversed, output ONLY the rollback command (no explanation, no markdown).\n"
+                    "2. If the command CANNOT be reversed (e.g., killed a process, deleted files without backup), "
+                    "output exactly: CANNOT_ROLLBACK: <one-line reason>\n"
+                    "3. If the command is ambiguous, output: CANNOT_ROLLBACK: <reason> | ALTERNATIVE: <what to do instead>\n"
+                )
+                resp = llm.generate_response(prompt)
+                raw = ""
+                if isinstance(resp, dict) and resp.get("success"):
+                    raw = resp.get("raw_response") or resp.get("explanation", "")
+                elif isinstance(resp, str):
+                    raw = resp
+                raw = raw.strip()
+
+                if raw.upper().startswith("CANNOT_ROLLBACK:"):
+                    parts = raw.split("|", 1)
+                    reason = parts[0].replace("CANNOT_ROLLBACK:", "").strip()
+                    alternative = parts[1].replace("ALTERNATIVE:", "").strip() if len(parts) > 1 else None
+                    return {
+                        "rollbackable": False,
+                        "explanation": reason,
+                        "alternative": alternative,
+                        "original_command": original_cmd,
+                    }
+                else:
+                    rollback_cmd = raw
+            except Exception as e:
+                return {
+                    "rollbackable": False,
+                    "explanation": f"Reasoning engine error: {e}",
+                    "alternative": "Review the command manually and apply a manual inverse.",
+                    "original_command": original_cmd,
+                }
+        else:
+            return {
+                "rollbackable": False,
+                "explanation": "No rollback command was pre-computed for this action, and no reasoning engine is configured.",
+                "alternative": "Configure a Groq API key in Settings to enable automatic rollback generation.",
+                "original_command": original_cmd,
+            }
+
+    # Phase 1: return rollback_cmd for operator approval (don't execute yet)
+    if not execute:
+        return {
+            "rollbackable": True,
+            "rollback_cmd": rollback_cmd,
+            "original_command": original_cmd,
+            "needs_approval": True,
+            "message": "Review the rollback command and call this endpoint with execute=true to run it.",
+        }
+
+    # Phase 2: actually run it
     if not platform or not platform.connected:
         raise HTTPException(status_code=400, detail="No platform connected for rollback")
 
     try:
         stdout, stderr, rc = platform.execute_command(rollback_cmd)
-        return {"success": rc == 0, "stdout": stdout, "stderr": stderr, "exit_code": rc}
+        success = rc == 0
+        # Record rollback in bandit
+        agent = _state.get("security_agent")
+        if agent and hasattr(agent, "bandit"):
+            from components.action_bandit import fidelity_bucket
+            ctx = _bandit_context_from_state()
+            bucket = fidelity_bucket(ctx.get("f_min", 1.0))
+            action_type = _infer_action_type_from_cmd(original_cmd)
+            arm_key = f"{bucket}:ssh:{action_type}"
+            agent.bandit.record_rollback(arm_key)
+        _state["action_logger"].log(
+            "rollback", "command_rollback",
+            f"{'OK' if success else 'FAIL'}: {rollback_cmd[:100]}",
+            severity="info" if success else "warning",
+            metadata={"rollback_cmd": rollback_cmd, "original_cmd": original_cmd},
+        )
+        return {"success": success, "stdout": stdout, "stderr": stderr, "exit_code": rc,
+                "rollback_cmd": rollback_cmd}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -938,6 +1656,40 @@ def save_settings(req: SettingsRequest):
 # TAARAWARE DEPLOYED CHECK
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@app.get("/api/taara/basis-status")
+def taara_basis_status():
+    """Return quantum basis and classical model status — independent of whether TaaraWare is live."""
+    analyzer = _state.get("taara_analyzer")
+    embedder = _state.get("embedder")
+    detector = _state.get("detector")
+    platform = _state.get("platform")
+
+    # Determine identity from connected host (same key training used)
+    identity = None
+    basis_size = 0
+    max_residual = 0.0
+    quantum_residuals = 0
+
+    if analyzer and platform and hasattr(platform, "config"):
+        host = platform.config.get("host", "")
+        identity = f"taaraware_{host}" if host else None
+        if identity and identity in analyzer.memory_bases:
+            b = analyzer.memory_bases[identity]
+            basis_size = len(b.basis_vectors)
+            max_residual = round(b.max_residual_norm, 4)
+        quantum_residuals = len(analyzer.quantum_validator.memory_residuals)
+
+    return {
+        "identity": identity,
+        "basis_size": basis_size,
+        "basis_mature": basis_size >= 3,
+        "max_residual_norm": max_residual,
+        "quantum_residuals": quantum_residuals,
+        "autoencoder_trained": bool(embedder and getattr(embedder, "is_trained", False)),
+        "isolation_forest_trained": bool(detector and detector.is_ready()),
+    }
+
+
 @app.get("/api/taaraware/deployed")
 def taaraware_deployed():
     platform = _state["platform"]
@@ -949,6 +1701,19 @@ def taaraware_deployed():
         return {"deployed": deployed}
     except Exception:
         return {"deployed": False}
+
+
+@app.post("/api/taaraware/update")
+def taaraware_update():
+    platform = _state["platform"]
+    if not platform or not platform.connected:
+        raise HTTPException(status_code=400, detail="No platform connected")
+    taaraware_mgr = _state["taaraware_mgr"]
+    result = taaraware_mgr.update_agent(platform)
+    if result.get("success"):
+        _state["action_logger"].log("taaraware", "update",
+                                    result.get("message", ""), severity="info")
+    return result
 
 
 @app.get("/api/taaraware/info")
@@ -1124,6 +1889,66 @@ def get_bandit_summary():
         "pre_approved": agent.bandit.get_pre_approved_actions_summary(),
         "autonomy_level": agent.bandit.autonomy_level,
         "arm_stats": agent.bandit.arm_stats,
+    }
+
+
+@app.get("/api/actions/bandit-recommend")
+def bandit_recommend(f_min: float = None, platform_type: str = None, top_k: int = 5):
+    """
+    Return bandit-ranked action recommendations for the current or specified quantum context.
+    If f_min is not provided, uses the current active alert's f_min.
+    """
+    agent = _state.get("security_agent")
+    if not agent or not hasattr(agent, "bandit"):
+        return {"recommendations": [], "context": {}}
+
+    # Resolve context
+    if f_min is None:
+        alert = _state.get("active_alert") or {}
+        f_min = alert.get("f_min", 1.0)
+    if platform_type is None:
+        platform_type = _state.get("platform_type", "ssh") or "ssh"
+
+    bandit_context = {"f_min": f_min, "platform_type": platform_type}
+
+    from components.action_bandit import fidelity_bucket
+    bucket = fidelity_bucket(f_min)
+
+    # Full candidate set — all known action types
+    candidates = [
+        {"action_type": "block_ip",        "description": "Block attacking IP via fail2ban"},
+        {"action_type": "rate_limit_ssh",  "description": "Apply SSH rate limiting (MaxAuthTries 3)"},
+        {"action_type": "isolate_user",    "description": "Lock suspicious user account temporarily"},
+        {"action_type": "harden_ssh",      "description": "Apply SSH config hardening (PermitRootLogin no, etc)"},
+        {"action_type": "restart_service", "description": "Restart sshd to force re-auth of all sessions"},
+        {"action_type": "firewall_rule",   "description": "Add firewall rule to restrict SSH access"},
+        {"action_type": "rotate_key",      "description": "Rotate SSH authorized_keys for compromised user"},
+        {"action_type": "kill_process",    "description": "Kill suspicious process by PID"},
+    ]
+
+    ranked = agent.bandit.select_actions(bandit_context, candidates, top_k=top_k)
+    result = []
+    for rec in ranked:
+        contrast = agent.bandit.get_contrast_insight(rec.get("arm_key", ""))
+        result.append({
+            "action_type":    rec["action_type"],
+            "description":    rec["description"],
+            "ucb_score":      rec.get("ucb_score", 0),
+            "approval_rate":  rec.get("approval_rate", 0),
+            "success_rate":   rec.get("success_rate", 0),
+            "times_seen":     rec.get("times_seen", 0),
+            "pre_approved":   rec.get("pre_approved", False),
+            "bandit_rationale": rec.get("bandit_rationale", ""),
+            "contrast_insight": contrast,
+            "quantum_context":  rec.get("quantum_context", bucket),
+            "source": "TAARA Learned" if rec.get("times_seen", 0) > 0 else "Exploring",
+        })
+
+    return {
+        "recommendations": result,
+        "context": {"f_min": f_min, "bucket": bucket, "platform_type": platform_type},
+        "autonomy_level": agent.bandit.autonomy_level,
+        "total_arms_learned": len(agent.bandit.arm_stats),
     }
 
 
@@ -1443,13 +2268,28 @@ def demo_tick():
     proposed_actions = []
     if is_novel:
         ssh_findings = _build_demo_ssh_findings(feature_dict)
+        # Simulate classical signals coherently with the architecture:
+        # recon_error spikes when behavior is anomalous (autoencoder can't reconstruct)
+        # latent_fidelity drops (current latent drifts from normal latent direction)
+        # These are plausible synthetic values — in real mode they come from the trained model
+        sim_recon_error = round(0.02 + (1.0 - f_min) * 0.18, 4)   # 0.02 normal → 0.20 at f_min=0
+        sim_latent_fid  = round(0.85 - (1.0 - f_min) * 0.45, 4)   # 0.85 normal → 0.40 at f_min=0
+        sim_if_score    = round(-0.05 - (1.0 - f_min) * 0.3, 4)    # negative = anomalous
+        classical_confirmed = f_min < 0.5  # in demo, classical always agrees when quantum fires
+        feature_dict["recon_error"]    = sim_recon_error
+        feature_dict["latent_fidelity"] = sim_latent_fid
+        feature_dict["anomaly_score"]  = sim_if_score
+        feature_dict["is_anomaly"]     = classical_confirmed
         alert = {
             "timestamp": time.time(),
             "f_min": f_min,
+            "score": round((1.0 - f_min) * 100, 1),
+            "host": "demo-server.taara.local",
             "f_min_amplitude": result.get("f_min_amplitude"),
             "bucket": bucket,
             "correlation_detected": correlation_detected,
             "features": feature_dict,
+            "classical_confirmed": classical_confirmed,
             "tick": tick_idx,
         }
         _demo_state["current_alert"] = alert
@@ -1596,6 +2436,17 @@ def demo_full_scan(scenario: str = "ssh_intrusion"):
     }
 
     _state["analysis_results"] = demo_analysis
+    # Enrich final_alert with classical signals for investigate endpoint coherence
+    if final_alert:
+        wf = worst["f_min"]
+        final_alert["score"] = round((1.0 - wf) * 100, 1)
+        final_alert["host"] = "demo-server.taara.local"
+        final_alert["classical_confirmed"] = wf < 0.5
+        final_alert.setdefault("features", worst["features"])
+        final_alert["features"]["recon_error"]     = round(0.02 + (1.0 - wf) * 0.18, 4)
+        final_alert["features"]["latent_fidelity"] = round(0.85 - (1.0 - wf) * 0.45, 4)
+        final_alert["features"]["anomaly_score"]   = round(-0.05 - (1.0 - wf) * 0.3, 4)
+        final_alert["features"]["is_anomaly"]      = wf < 0.5
     _state["active_alert"] = final_alert
 
     return {
@@ -1664,6 +2515,71 @@ def demo_trigger_anomaly(f_min: float = 0.23, scenario: str = "ssh_intrusion"):
     return {"success": True, "alert": alert}
 
 
+@app.post("/api/demo/trigger-test-alert")
+def demo_trigger_test_alert():
+    """
+    Trigger a realistic T1078 test alert using the live server's actual quantum model.
+    Generates a behaviorally perturbed feature vector — mimics a stolen-credential
+    attacker who has the same access as the legitimate user but slightly different
+    timing/fail-rate pattern. Runs it through the real quantum pipeline so the alert
+    has real quantum_confidence, swap_fidelity, q_directionality, phase_coherence values.
+    """
+    host = _state.get("connected_host", "test-server")
+    taara_analyzer = _state.get("taara_analyzer")
+    embedder = _state.get("embedder")
+
+    # T1078-like feature vector: elevated fail rate, shifted timing, higher entropy
+    features = {
+        "cpu_usage": 34.2, "memory_usage": 52.1, "disk_usage": 41.0,
+        "proc_spawn_rate": 6.8, "proc_root_ratio": 0.18, "proc_cmd_entropy": 5.2,
+        "net_outbound_conn_rate": 18.0, "net_unique_dst_ips": 7, "net_unique_dst_ports": 14,
+        "net_port_entropy": 3.1, "net_failed_conn_ratio": 0.28,
+        "failed_logins_1h": 12.0, "new_processes_1h": 9.0,
+        "suspicious_connections": 4.0, "privilege_escalations": 1.0,
+        "temporal_rhythm_deviation": 0.74, "causal_chain_novelty": 0.61,
+        "concealment_signal": 0.42, "anomaly_score": 0.0,
+    }
+
+    FEATURE_NAMES = [
+        "cpu_usage", "memory_usage", "disk_usage",
+        "proc_spawn_rate", "proc_root_ratio", "proc_cmd_entropy",
+        "net_outbound_conn_rate", "net_unique_dst_ips", "net_unique_dst_ports",
+        "net_port_entropy", "net_failed_conn_ratio",
+        "failed_logins_1h", "new_processes_1h",
+        "suspicious_connections", "privilege_escalations",
+        "temporal_rhythm_deviation", "causal_chain_novelty",
+        "concealment_signal", "anomaly_score",
+    ]
+    fv = np.array([float(features.get(k, 0.0)) for k in FEATURE_NAMES], dtype=np.float32)
+
+    # Run through real quantum pipeline
+    qr = {}
+    if taara_analyzer and embedder:
+        identity = f"taaraware_{host}"
+        try:
+            qr = taara_analyzer.get_quantum_risk_assessment(fv, identity_id=identity, embedder=embedder) or {}
+        except Exception:
+            pass
+
+    alert = {
+        "host": host,
+        "hostname": host,
+        "f_min": qr.get("f_min", 0.21),
+        "swap_fidelity": qr.get("swap_fidelity"),
+        "q_directionality": qr.get("q_directionality"),
+        "phase_coherence": qr.get("phase_coherence"),
+        "quantum_confidence": qr.get("quantum_confidence"),
+        "score": qr.get("risk_score", 72.0),
+        "features": features,
+        "timestamp": time.time(),
+        "bucket": "t1078_test",
+        "classical_confirmed": True,
+        "test_alert": True,
+    }
+    _state["active_alert"] = alert
+    return {"success": True, "alert": alert, "quantum": qr}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # QUANTUM LEGIBILITY — explain any F_min value in plain math + English
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1724,38 +2640,37 @@ def quantum_explain(f_min: float = 1.0):
 @app.get("/api/quantum/circuit")
 def quantum_circuit():
     return {
-        "n_qubits": 4,
-        "architecture": "angle_plus_amplitude_dual_encoding",
+        "n_qubits": 3,
+        "architecture": "amplitude_embedding_subspace_projection",
         "circuit_steps": [
-            {"step": 1, "op": "AngleEmbedding(features, rotation=X)", "description": "Map feature_i → Rx(θ_i) where θ_i = π/2 + arctan(feature_i). Normal behavior (all zeros) → all qubits at π/2 (equator)."},
-            {"step": 2, "op": "Ring-CNOT(i, (i+1)%4)", "description": "Entangle adjacent qubits. Creates interference between correlated features — joint deviations produce constructive interference invisible to amplitude encoding."},
-            {"step": 3, "op": "AngleEmbedding(features, rotation=Y)", "description": "Second encoding layer with Y rotations. Increases sensitivity to correlated multi-feature patterns."},
-            {"step": 4, "op": "Ring-CNOT reverse", "description": "Reverse entanglement pass for symmetric interference pattern."},
-            {"step": 5, "op": "return state()", "description": "Return full quantum state vector. Compare with memory states via F = |⟨ψ_t|ψ_m⟩|²."},
+            {"step": 1, "op": "BehavioralAE(x ∈ ℝ¹⁹) → z ∈ ℝ⁸", "description": "19-dim behavioral feature vector (PQC-transformed) passed through wav2vec-inspired autoencoder: 19→64→8→64→19, Tanh bottleneck. The 8-dim latent z_t captures behavioral DNA."},
+            {"step": 2, "op": "AmplitudeEmbedding(z_t, wires=[0,1,2], normalize=True)", "description": "Map 8-dim latent onto a 3-qubit (8-amplitude) quantum state |ψ_t⟩ via AmplitudeEmbedding. Normalization ensures valid quantum state. Requires only 3 qubits for 2³=8 amplitudes."},
+            {"step": 3, "op": "F_sub = Σ_{k=1}^{K} |⟨ψ_t|ψ_k⟩|² (K=3 PCA components)", "description": "SWAP fidelity: squared inner products between |ψ_t⟩ and the K=3 principal component states from the per-identity normal subspace. swap_s = 1 − F_sub is the anomaly signal. Normal users: F_sub ≈ 0.936. Attackers: F_sub ≈ 0.253. Separation gap: +0.683."},
+            {"step": 4, "op": "q_dir = Σ |⟨ψ_t|ψ_c⟩|² (complement dims K+1,K+2)", "description": "Directionality: alignment with the complement subspace (dims beyond K). Normal: 0.052. Attack: 0.270. Gap: +0.218. Orthogonal to SWAP (corr≈0.024) — independent information."},
+            {"step": 5, "op": "coh = |mean(exp(i·φ_t))| over W=4 windows", "description": "Phase coherence: circular mean of the complement-subspace angle φ_t = arctan2(proj_c1, proj_c0) over 4 windows. Measures sustained directionality — distinguishes coherent attack drift from transient noise. Normal: 0.624. Attack: 0.963."},
+            {"step": 6, "op": "conf = α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir)", "description": "V3 interference fusion. α=0.263, β=0.285, γ=0.451 (per-identity LR-fit from normal training windows, regularized to global prior). Alert when conf > 0.1854 (p95 of normal training). Validated: Prec=0.689, Rec=0.942, F1=0.796, AUC=0.980 on CERT r4.2."},
         ],
-        "amplitude_circuit": "AmplitudeEmbedding → BasicEntangler → state()",
         "why_angle_vs_amplitude": (
-            "Amplitude encoding treats features as a global superposition — "
-            "it captures magnitude but not per-feature directionality. "
-            "A server with doubled CPU AND doubled logins looks the same as one with quadrupled CPU alone "
-            "if total norm is equal. "
-            "Angle encoding maps each feature to a separate qubit rotation angle. "
-            "Ring-CNOT entanglement creates interference between correlated features. "
-            "If both CPU and failed_logins spike together (coordinated attack), the interference pattern "
-            "is geometrically distinct from either spiking alone. "
-            "This is the correlation_signal_detected flag: F_angle < F_amplitude − 0.05."
+            "TAARA uses AmplitudeEmbedding on the 8-dim behavioral latent — NOT angle encoding on raw features. "
+            "The autoencoder (BehavioralAE) first learns a compressed 8-dim representation of normal behavior. "
+            "AmplitudeEmbedding maps this to a quantum state where the Hilbert space geometry reflects behavioral structure. "
+            "SWAP subspace fidelity then measures how much of the current state lies in the normal PCA subspace. "
+            "This is more powerful than angle encoding because the AE latent already captures multi-feature correlations — "
+            "the quantum projection then operates on semantically rich representations, not raw feature values."
         ),
         "pqc_layer": (
-            "Per-client Kyber768 shared secret applies a lattice-hard offset to the feature vector "
-            "before encoding. An attacker cannot compute the client's normal behavioral basis "
-            "without the private key — the quantum memory is client-specific and cryptographically protected."
+            "ML-KEM Kyber768 (NIST FIPS 203) apply_client_transform applies a SHA3-256 keyed offset "
+            "to the 19-dim feature vector before AE encoding. The behavioral norm (PCA subspace) "
+            "is computed in PQC-transformed space. An attacker who intercepts traffic cannot compute "
+            "the client's normal subspace without the Kyber768 private key — the quantum memory "
+            "is cryptographically bound to the client identity."
         ),
         "framework": "PennyLane default.qubit (classical simulation)",
         "hardware_note": (
             "Running on classical simulation. No quantum speedup claimed. "
-            "The same circuit runs on real quantum hardware unchanged when sufficient "
-            "coherence time and qubit count become available. "
-            "The contribution is the formalism and its application — not hardware speed."
+            "The same 3-qubit AmplitudeEmbedding circuit runs on real quantum hardware unchanged "
+            "when sufficient coherence time becomes available (3-qubit circuits are near-term feasible). "
+            "The contribution is the behavioral subspace formalism and its validated application to T1078 detection."
         ),
     }
 
@@ -1858,6 +2773,29 @@ def client_activity(client_id: str, limit: int = 20):
         return {"entries": entries}
     except Exception:
         return {"entries": []}
+
+
+@app.get("/api/node/identity")
+def node_identity():
+    """Return persistent identity info for the currently connected node."""
+    host = _state.get("connected_host")
+    if not host:
+        return {"connected": False}
+    from components.node_identity_db import (
+        node_id, load_meta, load_training_log, load_action_log
+    )
+    meta = load_meta(host)
+    training_log = load_training_log(host)
+    action_log = load_action_log(host)
+    return {
+        "connected": True,
+        "host": host,
+        "node_id": node_id(host),
+        "meta": meta,
+        "training_runs": len(training_log),
+        "last_training": training_log[-1] if training_log else None,
+        "action_count": len(action_log),
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

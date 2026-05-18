@@ -2,10 +2,14 @@
 DNA Autoencoder
 ===============
 
-Autoencoder for learning compact embeddings of system behavior.
+Autoencoder for learning compact behavioral DNA embeddings.
 
 Architecture:
-    Input (19 dims) → Encoder (64 hidden) → Bottleneck (64/128 dims) → Decoder (64 hidden) → Output (19 dims)
+    Input (19) → Hidden (64) → Bottleneck (8) → Hidden (64) → Output (19)
+
+The bottleneck (8 dims) is the behavioral DNA — a compressed latent state
+that captures the essence of normal behavior. This latent vector is what
+gets quantum-encoded in the SWAP test for fidelity-based anomaly detection.
 
 Training:
     - Trained ONLY on benign/baseline behavior
@@ -14,8 +18,8 @@ Training:
     - Epochs: 50-100 (with early stopping)
 
 Usage:
-    - Encoder output = embedding for downstream tasks
-    - Reconstruction error = additional anomaly signal
+    - Encoder output (8-dim) → SWAP test quantum fidelity (primary detector)
+    - Reconstruction error → classical corroborating signal
 """
 
 import torch
@@ -29,25 +33,25 @@ from sklearn.preprocessing import StandardScaler
 
 
 class DNAAutoencoder(nn.Module):
-    """Autoencoder for DNA feature embedding."""
+    """Autoencoder for behavioral DNA embedding. Bottleneck = 8 dims."""
 
-    def __init__(self, input_dim=19, embedding_dim=64, hidden_dim=64):
+    def __init__(self, input_dim=19, embedding_dim=8, hidden_dim=64):
         super(DNAAutoencoder, self).__init__()
 
         self.input_dim = input_dim
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
 
-        # Encoder
+        # Encoder: 19 → 64 → 8
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(hidden_dim, embedding_dim),
-            nn.ReLU()
+            nn.Tanh()  # Tanh bounds latent space — better for amplitude encoding
         )
 
-        # Decoder
+        # Decoder: 8 → 64 → 19
         self.decoder = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim),
             nn.ReLU(),
@@ -76,7 +80,7 @@ class DNAEmbedder:
         # Create models directory
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
 
-        self.model = DNAAutoencoder(input_dim=19, embedding_dim=64, hidden_dim=64)
+        self.model = DNAAutoencoder(input_dim=19, embedding_dim=8, hidden_dim=64)
         self.scaler = StandardScaler()
         self.is_trained = False
 
@@ -97,8 +101,8 @@ class DNAEmbedder:
         Returns:
             dict: Training statistics
         """
-        if len(data) < 10:
-            print(f"[DNAEmbedder] Warning: Only {len(data)} samples - need at least 10 for training")
+        if len(data) < 3:
+            print(f"[DNAEmbedder] Warning: Only {len(data)} samples - need at least 3 for training")
             return {'status': 'insufficient_data', 'samples': len(data)}
 
         print(f"[DNAEmbedder] Training autoencoder on {len(data)} benign samples...")
@@ -150,8 +154,6 @@ class DNAEmbedder:
             if avg_loss < best_loss:
                 best_loss = avg_loss
                 patience_counter = 0
-                # Save best model
-                self.save()
             else:
                 patience_counter += 1
 
@@ -182,13 +184,13 @@ class DNAEmbedder:
         Returns:
             np.ndarray: Embeddings of shape (n_samples, 64) or (64,)
         """
-        if not self.is_trained:
-            print("[DNAEmbedder] Warning: Model not trained, returning zeros")
+        if not self.is_ready():
+            print("[DNAEmbedder] Warning: Model not ready, returning zeros")
             single_sample = features.ndim == 1
             if single_sample:
-                return np.zeros(64, dtype=np.float32)
+                return np.zeros(8, dtype=np.float32)
             else:
-                return np.zeros((len(features), 64), dtype=np.float32)
+                return np.zeros((len(features), 8), dtype=np.float32)
 
         # Handle single sample
         single_sample = features.ndim == 1
@@ -200,7 +202,7 @@ class DNAEmbedder:
             features_normalized = self.scaler.transform(features)
         except Exception as e:
             print(f"[DNAEmbedder] Scaling error: {e}")
-            return np.zeros((len(features), 64), dtype=np.float32)
+            return np.zeros((len(features), 8), dtype=np.float32)
 
         # Embed
         self.model.eval()
@@ -237,8 +239,23 @@ class DNAEmbedder:
 
         return error
 
+    def save_to(self, path: str):
+        """Save model checkpoint to an arbitrary path (used for per-identity copies)."""
+        try:
+            torch.save({
+                'model_state_dict': self.model.state_dict(),
+                'input_dim': self.model.input_dim,
+                'embedding_dim': self.model.embedding_dim,
+                'hidden_dim': self.model.hidden_dim,
+                'is_trained': True
+            }, path)
+            print(f"[DNAEmbedder] Model saved to {path}")
+        except Exception as e:
+            print(f"[DNAEmbedder] save_to error: {e}")
+
     def save(self):
-        """Save model and scaler to disk."""
+        """Save model and scaler to disk. Never touches dna_autoencoder_pretrained.pt."""
+        pretrained_backup = self.model_path.replace('dna_autoencoder.pt', 'dna_autoencoder_pretrained.pt')
         try:
             # Save model
             torch.save({
@@ -246,7 +263,7 @@ class DNAEmbedder:
                 'input_dim': self.model.input_dim,
                 'embedding_dim': self.model.embedding_dim,
                 'hidden_dim': self.model.hidden_dim,
-                'is_trained': self.is_trained
+                'is_trained': True
             }, self.model_path)
 
             # Save scaler
@@ -265,40 +282,121 @@ class DNAEmbedder:
             print(f"[DNAEmbedder] Save error: {e}")
 
     def load(self):
-        """Load model and scaler from disk."""
-        try:
-            if not os.path.exists(self.model_path):
-                print(f"[DNAEmbedder] No saved model found at {self.model_path}")
-                return False
+        """
+        Load model and scaler from disk.
 
-            # Load model
-            checkpoint = torch.load(self.model_path, weights_only=True)
+        Priority order:
+          1. dna_autoencoder.pt       — finetuned working copy (if it exists)
+          2. dna_autoencoder_pretrained.pt — canonical pretrained base (always present
+                                             after running the experiment)
+
+        This means: replacing dna_autoencoder_pretrained.pt with a better model
+        automatically becomes the new base for all future finetuning sessions,
+        because the working copy is rebuilt from it on the next clean start.
+        """
+        pretrained_path = self.model_path.replace(
+            'dna_autoencoder.pt', 'dna_autoencoder_pretrained.pt'
+        )
+        # Decide which file to load from
+        if os.path.exists(self.model_path):
+            load_path = self.model_path
+        elif os.path.exists(pretrained_path):
+            load_path = pretrained_path
+        else:
+            print(f"[DNAEmbedder] No model found at {self.model_path} or {pretrained_path}")
+            return False
+
+        try:
+            checkpoint = torch.load(load_path, weights_only=True)
             self.model = DNAAutoencoder(
                 input_dim=checkpoint['input_dim'],
                 embedding_dim=checkpoint['embedding_dim'],
                 hidden_dim=checkpoint['hidden_dim']
             )
             self.model.load_state_dict(checkpoint['model_state_dict'])
-            self.is_trained = checkpoint.get('is_trained', True)
+            self.is_trained = True
 
             # Load scaler
             if os.path.exists(self.scaler_path):
                 with open(self.scaler_path, 'r') as f:
                     scaler_data = json.load(f)
-
                 if scaler_data['mean'] is not None:
                     self.scaler.mean_ = np.array(scaler_data['mean'])
                     self.scaler.scale_ = np.array(scaler_data['scale'])
                     self.scaler.var_ = np.array(scaler_data['var'])
-                    # Set n_samples_seen_ to make sklearn happy
                     self.scaler.n_samples_seen_ = len(scaler_data['mean'])
 
-            print(f"[DNAEmbedder] Model loaded from {self.model_path}")
+            src = "pretrained" if load_path == pretrained_path else "finetuned"
+            print(f"[DNAEmbedder] Loaded {src} model from {load_path} (embedding_dim={checkpoint['embedding_dim']})")
             return True
 
         except Exception as e:
             print(f"[DNAEmbedder] Load error: {e}")
             return False
+
+    def finetune(self, data: np.ndarray, epochs: int = 10, lr: float = 0.0005) -> dict:
+        """
+        Finetune existing model weights on new live data without resetting the scaler.
+        Requires the model to already be trained (loaded from disk).
+        Uses a lower LR and fewer epochs — adapts the model to the current server's behavior
+        without forgetting the base representation learned from the large dataset.
+        """
+        if not self.is_ready():
+            # No pretrained model — fall back to full train
+            return self.train(data, epochs=min(50, epochs * 5), lr=lr)
+
+        if len(data) < 3:
+            print(f"[DNAEmbedder] Finetune: only {len(data)} samples, skipping AE update")
+            return {'status': 'skipped', 'reason': 'too_few_samples', 'samples': len(data)}
+
+        print(f"[DNAEmbedder] Finetuning on {len(data)} live samples ({epochs} epochs, lr={lr})...")
+        # Use existing scaler — don't refit it
+        data_normalized = self.scaler.transform(np.clip(data, -10, 10))
+        X = torch.FloatTensor(data_normalized)
+
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        self.model.train()
+        best_loss = float('inf')
+        best_epoch = 0
+        for epoch in range(epochs):
+            reconstructed, _ = self.model(X)
+            loss = criterion(reconstructed, X)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            if loss.item() < best_loss:
+                best_loss = loss.item()
+                best_epoch = epoch
+
+        # No deepcopy per-epoch — finetuning with small data converges monotonically
+        # so final weights are the best weights. Disk persistence is caller's job.
+        self.is_trained = True
+        print(f"[DNAEmbedder] Finetune complete. Final loss: {best_loss:.6f}")
+        return {'status': 'success', 'epochs_trained': epochs, 'final_loss': best_loss, 'samples': len(data)}
+
+    def load_identity(self, host: str, finetuned_dir: str = 'models/finetuned') -> bool:
+        """
+        Try to load a per-identity finetuned model for this host.
+        Falls back to the base pretrained model if no identity checkpoint exists.
+        """
+        safe_host = host.replace('.', '_').replace(':', '_')
+        identity_path = os.path.join(finetuned_dir, f'{safe_host}_ae.pt')
+        if os.path.exists(identity_path):
+            try:
+                checkpoint = torch.load(identity_path, weights_only=True)
+                self.model = DNAAutoencoder(
+                    input_dim=checkpoint['input_dim'],
+                    embedding_dim=checkpoint['embedding_dim'],
+                    hidden_dim=checkpoint['hidden_dim']
+                )
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+                self.is_trained = True
+                print(f"[DNAEmbedder] Loaded identity-specific model for {host}")
+                return True
+            except Exception as e:
+                print(f"[DNAEmbedder] Identity model load error for {host}: {e}")
+        return False
 
     def is_ready(self) -> bool:
         """Check if model is trained and ready."""
