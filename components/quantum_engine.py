@@ -526,6 +526,99 @@ def compute_bloch_coordinates(state: np.ndarray, qubit: int = 0) -> Dict:
     }
 
 
+# ── Validated quantum signals (from v3 benchmark, latent-space SWAP test) ─────
+#
+# These operate on the 8-dim AE latent z_t, NOT raw features.
+# The PCA basis is built from normal training latents per identity.
+# Results confirmed on real SSH benchmark: SWAP gap=+0.683, dir gap=+0.218,
+# coherence gap=+0.339. Formula: conf = α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir)
+# See experiments/taara_experiment.py for full benchmark methodology.
+
+_dev_swap = qml.device("default.qubit", wires=3)
+
+@qml.qnode(_dev_swap)
+def _amp_state_3q_swap(vec):
+    qml.AmplitudeEmbedding(vec, wires=range(3), normalize=True, pad_with=0.0)
+    return qml.state()
+
+def latent_swap_fidelity(z_t: np.ndarray, pca_basis: np.ndarray,
+                          pca_mean: np.ndarray, K: int = 3) -> float:
+    """
+    Quantum subspace projection fidelity on 8-dim latent.
+    F_sub = Σ_{k=1}^{K} |<ψ_t|ψ_k>|²   K=3 PCA components of normal latents.
+    swap_s = 1 - F_sub  (high = outside normal subspace = anomalous).
+    """
+    z_centered = z_t - pca_mean
+    if np.linalg.norm(z_centered) < 1e-10:
+        return 1.0
+    a = z_centered.astype(complex)
+    psi_t = _amp_state_3q_swap(a / np.linalg.norm(a))
+    total = 0.0
+    for k in range(min(K, len(pca_basis))):
+        b = pca_basis[k].astype(complex)
+        b_norm = np.linalg.norm(b)
+        if b_norm < 1e-10:
+            continue
+        psi_k = _amp_state_3q_swap(b / b_norm)
+        total += float(abs(np.dot(np.conj(psi_t), psi_k)) ** 2)
+    return min(total, 1.0)
+
+def latent_directionality(z_t: np.ndarray, pca_mean: np.ndarray,
+                           pca_complement: np.ndarray) -> float:
+    """
+    Complement-subspace alignment: how much is z_t pointing into directions
+    that normal behavior never explores?
+    q_dir = Σ_{c} |<ψ_t|ψ_c>|²  over complement vectors Vt[K:K+2].
+    """
+    z_centered = z_t - pca_mean
+    if np.linalg.norm(z_centered) < 1e-10:
+        return 0.0
+    a = z_centered.astype(complex)
+    psi_t = _amp_state_3q_swap(a / np.linalg.norm(a))
+    total = 0.0
+    for c_vec in pca_complement:
+        b = c_vec.astype(complex)
+        b_norm = np.linalg.norm(b)
+        if b_norm < 1e-10:
+            continue
+        psi_c = _amp_state_3q_swap(b / b_norm)
+        total += float(abs(np.dot(np.conj(psi_t), psi_c)) ** 2)
+    return min(total, 1.0)
+
+def latent_deviation_angle(z_t: np.ndarray, pca_mean: np.ndarray,
+                            pca_complement: np.ndarray) -> float:
+    """Phase angle of z_t in the complement subspace. Used for coherence tracking."""
+    z_centered = z_t - pca_mean
+    if np.linalg.norm(z_centered) < 1e-10:
+        return 0.0
+    c0 = pca_complement[0] if len(pca_complement) > 0 else np.zeros(len(z_t))
+    c1 = pca_complement[1] if len(pca_complement) > 1 else np.zeros(len(z_t))
+    proj0 = float(np.dot(z_centered, c0) / (np.linalg.norm(c0) + 1e-10))
+    proj1 = float(np.dot(z_centered, c1) / (np.linalg.norm(c1) + 1e-10))
+    return float(np.arctan2(proj1, proj0))
+
+def latent_phase_coherence(angles: list) -> float:
+    """
+    |mean(exp(i·φ))| over W consecutive windows.
+    0 = random phase (noise), 1 = sustained directional drift (attack).
+    """
+    if not angles:
+        return 0.0
+    return float(abs(np.mean(np.exp(1j * np.array(angles)))))
+
+def quantum_confidence_v3(swap_fidelity: float, q_dir: float, coherence: float,
+                           alpha: float = 0.263, beta: float = 0.285,
+                           gamma: float = 0.451) -> float:
+    """
+    Validated v3 fusion formula. Default weights are mean across 293 identities
+    from the real SSH benchmark run.
+    conf = α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir)
+    """
+    swap_s = max(0.0, 1.0 - swap_fidelity)
+    interference = coherence * math.sqrt(max(swap_s * q_dir, 0.0))
+    return float(np.clip(alpha * swap_s + beta * q_dir + gamma * interference, 0.0, 1.0))
+
+
 def apply_client_transform(feature_vec: np.ndarray, shared_secret_hex: str, hostname: str) -> np.ndarray:
     """
     Apply a per-client PQC-keyed additive offset to the feature vector before quantum encoding.

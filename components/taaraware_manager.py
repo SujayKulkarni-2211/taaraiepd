@@ -598,11 +598,19 @@ class TaaraWareManager:
             return result
 
         try:
-            # Detect remote OS
+            # Detect remote OS and writable install path
             uname_out, _, _ = platform.execute_command("uname -s")
             is_macos = uname_out.strip().lower() == 'darwin'
 
-            platform.execute_command("mkdir -p /opt/taaraware/data")
+            # Try /opt/taaraware first; fall back to ~/taaraware if /opt is read-only (e.g. Android/Termux)
+            test_out, _, test_rc = platform.execute_command(
+                "mkdir -p /opt/taaraware/data 2>/dev/null && echo ok || echo fallback"
+            )
+            if 'fallback' in (test_out or '') or test_rc != 0:
+                idir = "$HOME/taaraware"
+                platform.execute_command(f"mkdir -p {idir}/data")
+            else:
+                idir = "/opt/taaraware"
 
             agent_config = {
                 "command_center_host": config.get('command_center_host', '') if config else '',
@@ -617,13 +625,13 @@ class TaaraWareManager:
             }
 
             config_json = json.dumps(agent_config)
-            platform.execute_command(f"cat > /opt/taaraware/config.json << 'CONFIGEOF'\n{config_json}\nCONFIGEOF")
-            platform.execute_command(f"cat > /opt/taaraware/taaraware_agent.py << 'AGENTEOF'\n{TAARAWARE_AGENT_SCRIPT}\nAGENTEOF")
-            platform.execute_command("chmod +x /opt/taaraware/taaraware_agent.py")
+            platform.execute_command(f"cat > {idir}/config.json << 'CONFIGEOF'\n{config_json}\nCONFIGEOF")
+            platform.execute_command(f"cat > {idir}/taaraware_agent.py << 'AGENTEOF'\n{TAARAWARE_AGENT_SCRIPT}\nAGENTEOF")
+            platform.execute_command(f"chmod +x {idir}/taaraware_agent.py")
 
             if is_macos:
                 # macOS: use launchd plist in user LaunchAgents
-                plist = """<?xml version="1.0" encoding="UTF-8"?>
+                plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -631,13 +639,13 @@ class TaaraWareManager:
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/opt/taaraware/taaraware_agent.py</string>
+        <string>{idir}/taaraware_agent.py</string>
     </array>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
-    <key>WorkingDirectory</key><string>/opt/taaraware</string>
-    <key>StandardOutPath</key><string>/opt/taaraware/taaraware.log</string>
-    <key>StandardErrorPath</key><string>/opt/taaraware/taaraware_err.log</string>
+    <key>WorkingDirectory</key><string>{idir}</string>
+    <key>StandardOutPath</key><string>{idir}/taaraware.log</string>
+    <key>StandardErrorPath</key><string>{idir}/taaraware_err.log</string>
 </dict>
 </plist>"""
                 platform.execute_command("mkdir -p ~/Library/LaunchAgents")
@@ -648,27 +656,39 @@ class TaaraWareManager:
                     "launchctl list com.taara.taaraware 2>/dev/null && echo active || echo inactive"
                 )
             else:
-                # Linux: systemd
-                service_unit = """[Unit]
+                # Try systemd; fall back to nohup background process (Termux has no systemd)
+                systemd_ok, _, sd_rc = platform.execute_command(
+                    "command -v systemctl >/dev/null 2>&1 && echo yes || echo no"
+                )
+                if 'yes' in (systemd_ok or '') and sd_rc == 0:
+                    service_unit = f"""[Unit]
 Description=TaaraWare Security Monitoring Agent
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/taaraware/taaraware_agent.py
+ExecStart=/usr/bin/python3 {idir}/taaraware_agent.py
 Restart=always
 RestartSec=30
-WorkingDirectory=/opt/taaraware
+WorkingDirectory={idir}
 
 [Install]
 WantedBy=multi-user.target
 """
-                platform.execute_command(f"cat > /etc/systemd/system/taaraware.service << 'SVCEOF'\n{service_unit}\nSVCEOF")
-                platform.execute_command("systemctl daemon-reload")
-                platform.execute_command("systemctl enable taaraware")
-                platform.execute_command("systemctl start taaraware")
-                time.sleep(2)
-                status_out, _, _ = platform.execute_command("systemctl is-active taaraware")
+                    platform.execute_command(f"cat > /etc/systemd/system/taaraware.service << 'SVCEOF'\n{service_unit}\nSVCEOF")
+                    platform.execute_command("systemctl daemon-reload")
+                    platform.execute_command("systemctl enable taaraware")
+                    platform.execute_command("systemctl start taaraware")
+                    time.sleep(2)
+                    status_out, _, _ = platform.execute_command("systemctl is-active taaraware")
+                else:
+                    # No systemd (Termux/Android) — run directly in background
+                    platform.execute_command("pkill -f taaraware_agent.py 2>/dev/null || true")
+                    platform.execute_command(f"nohup python3 {idir}/taaraware_agent.py > {idir}/taaraware.log 2>&1 &")
+                    time.sleep(2)
+                    status_out, _, _ = platform.execute_command(
+                        "pgrep -f taaraware_agent.py >/dev/null 2>&1 && echo active || echo inactive"
+                    )
 
             host = platform.config.get('host', 'unknown')
 
@@ -752,14 +772,17 @@ WantedBy=multi-user.target
                 status_out, _, _ = platform.execute_command("systemctl is-active taaraware 2>/dev/null")
 
             pid_out, _, _ = platform.execute_command("pgrep -f taaraware_agent.py 2>/dev/null")
-            log_out, _, _ = platform.execute_command("tail -5 /opt/taaraware/taaraware.log 2>/dev/null")
+            # Check both install paths
+            log_out, _, _ = platform.execute_command(
+                "tail -5 /opt/taaraware/taaraware.log 2>/dev/null || tail -5 $HOME/taaraware/taaraware.log 2>/dev/null"
+            )
             buffer_out, _, _ = platform.execute_command(
-                "python3 -c \"import json; d=json.load(open('/opt/taaraware/data/feature_buffer.json')); print(len(d))\" 2>/dev/null"
+                "python3 -c \"import json,os; p=('/opt/taaraware' if os.path.exists('/opt/taaraware') else os.path.expanduser('~/taaraware'))+'/data/feature_buffer.json'; d=json.load(open(p)); print(len(d))\" 2>/dev/null"
             )
 
             # Read deployed version from remote config.json
             ver_out, _, _ = platform.execute_command(
-                "python3 -c \"import json; print(json.load(open('/opt/taaraware/config.json')).get('version','unknown'))\" 2>/dev/null"
+                "python3 -c \"import json,os; p=('/opt/taaraware' if os.path.exists('/opt/taaraware') else os.path.expanduser('~/taaraware'))+'/config.json'; print(json.load(open(p)).get('version','unknown'))\" 2>/dev/null"
             )
             deployed_version = ver_out.strip() or 'unknown'
             update_available = (deployed_version != CURRENT_AGENT_VERSION and deployed_version != 'unknown')
@@ -787,9 +810,9 @@ WantedBy=multi-user.target
             # Use python3 to emit only the JSON — avoids MOTD banner polluting stdout
             out, _, _ = platform.execute_command(
                 "python3 -c \""
-                "import json,sys; "
-                "f=open('/opt/taaraware/data/feature_buffer.json'); "
-                "d=json.load(f); "
+                "import json,os,sys; "
+                "p=('/opt/taaraware' if os.path.exists('/opt/taaraware') else os.path.expanduser('~/taaraware'))+'/data/feature_buffer.json'; "
+                "d=json.load(open(p)); "
                 "print(json.dumps(d[-50:]))"
                 "\" 2>/dev/null"
             )
@@ -829,16 +852,17 @@ WantedBy=multi-user.target
             import time as _time
             _time.sleep(2)
 
-            # Push updated agent script
-            platform.execute_command(f"cat > /opt/taaraware/taaraware_agent.py << 'AGENTEOF'\n{TAARAWARE_AGENT_SCRIPT}\nAGENTEOF")
-            platform.execute_command("chmod +x /opt/taaraware/taaraware_agent.py")
+            # Push updated agent script (check both paths)
+            idir_upd = "$(test -d /opt/taaraware && echo /opt/taaraware || echo $HOME/taaraware)"
+            platform.execute_command(f"cat > {idir_upd}/taaraware_agent.py << 'AGENTEOF'\n{TAARAWARE_AGENT_SCRIPT}\nAGENTEOF")
+            platform.execute_command(f"chmod +x {idir_upd}/taaraware_agent.py")
 
             # Update version in remote config (preserve all other settings)
             platform.execute_command(
                 f"python3 -c \""
-                f"import json; c=json.load(open('/opt/taaraware/config.json')); "
-                f"c['version']='{CURRENT_AGENT_VERSION}'; "
-                f"json.dump(c,open('/opt/taaraware/config.json','w'))"
+                f"import json,os; p=('/opt/taaraware' if os.path.exists('/opt/taaraware') else os.path.expanduser('~/taaraware'))+'/config.json'; "
+                f"c=json.load(open(p)); c['version']='{CURRENT_AGENT_VERSION}'; "
+                f"json.dump(c,open(p,'w'))"
                 f"\" 2>/dev/null"
             )
 
@@ -846,7 +870,10 @@ WantedBy=multi-user.target
             if is_macos:
                 platform.execute_command("launchctl start com.taara.taaraware 2>/dev/null || true")
             else:
-                platform.execute_command("systemctl start taaraware 2>/dev/null || python3 /opt/taaraware/taaraware_agent.py &")
+                platform.execute_command(
+                    f"systemctl start taaraware 2>/dev/null || "
+                    f"{{ pkill -f taaraware_agent.py 2>/dev/null; nohup python3 {idir_upd}/taaraware_agent.py > {idir_upd}/taaraware.log 2>&1 & }}"
+                )
 
             _time.sleep(2)
             status = self.check_agent_status(platform)

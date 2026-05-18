@@ -1,21 +1,19 @@
 {
   "status": "completed",
   "mode": "quick_demo",
-  "mode_name": "Quick Demo Training",
-  "start_time": 1779076953.5381973,
-  "samples_collected": 34,
-  "expected_samples": 120,
+  "mode_name": "Quick Training",
+  "start_time": 1779138949.4619548,
+  "samples_collected": 12,
+  "expected_samples": 12,
   "current_phase": "Training complete!",
   "progress": 100.0,
-  "errors": [
-    "TAARA error: all the input array dimensions except for the concatenation axis must match exactly, but along dimen"
-  ],
+  "errors": [],
   "baseline_collected": true,
   "embedder_trained": true,
   "anomaly_detector_trained": true,
-  "taara_trained": false,
-  "baseline_samples": 34,
-  "last_training_time": 1779077074.976304,
+  "taara_trained": true,
+  "baseline_samples": 12,
+  "last_training_time": 1779139016.4637954,
   "training_history": [
     {
       "timestamp": 1770801909.080951,
@@ -32,8 +30,38 @@
       "timestamp": 1779077074.9763045,
       "mode": "quick_demo",
       "samples": 34
+    },
+    {
+      "timestamp": 1779086519.3428953,
+      "mode": "quick_demo",
+      "samples": 120
+    },
+    {
+      "timestamp": 1779093249.4793239,
+      "mode": "quick_demo",
+      "samples": 32
+    },
+    {
+      "timestamp": 1779122945.6372898,
+      "mode": "quick_demo",
+      "samples": 7
+    },
+    {
+      "timestamp": 1779123217.7647212,
+      "mode": "standard",
+      "samples": 10
+    },
+    {
+      "timestamp": 1779124241.853473,
+      "mode": "quick_demo",
+      "samples": 7
+    },
+    {
+      "timestamp": 1779139016.463798,
+      "mode": "quick_demo",
+      "samples": 12
     }
   ],
-  "duration_minutes": 2,
-  "interval_seconds": 1
+  "duration_minutes": 1,
+  "interval_seconds": 5
 }

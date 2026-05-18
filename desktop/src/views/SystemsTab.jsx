@@ -471,17 +471,13 @@ function CostCard({ cost }) {
 function SSHView({ hostname, demoMode, subTab, setSubTab, analysisResults, setAnalysisResults, onAlertFired, onDisconnect }) {
   const [taarawareDeployed, setTaarawareDeployed] = useState(false);
 
-  // Poll deployed status every 20s so dashboard and taaraware tab stay in sync
+  // Check deployed status once on mount and after explicit deploy/revoke.
+  // Never flip to false from a poll — only from explicit revoke — to stop oscillation.
   useEffect(() => {
-    function checkDeployed() {
-      api.taarawareDeployed()
-        .then(r => { if (r.ok) setTaarawareDeployed(r.data.deployed === true); })
-        .catch(() => {});
-    }
-    checkDeployed();
-    const t = setInterval(checkDeployed, 20000);
-    return () => clearInterval(t);
-  }, []);
+    api.taarawareDeployed()
+      .then(r => { if (r.ok && r.data.deployed === true) setTaarawareDeployed(true); })
+      .catch(() => {});
+  }, [hostname]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -627,7 +623,8 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
   const qr          = data?.quantum_risk || {};
   const nov         = data?.novelty || {};
   const basisSize   = nov.basis_size ?? 0;
-  const basisMature = basisSize >= 3;
+  // Mature if 3+ vectors collected, OR pretrained model has already seeded live signals
+  const basisMature = basisSize >= 3 || (nov.quantum_confidence != null) || (nov.swap_fidelity != null);
   // Always show live F_min — suppress anomaly ALERTS during calibration but always display the value
   const fmin        = nov.f_min ?? data?.f_min ?? qr.f_min ?? data?.latest_f_min;
   // V3 validated quantum signals (swap fidelity, directionality, phase coherence, quantum confidence)
@@ -1829,7 +1826,10 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
   const fv   = status?.feature_vector || {};
   const nov  = status?.novelty || {};
   const basisSize = nov.basis_size ?? 0;
-  const basisMature = basisSize >= 3;
+  // Basis is "mature" if: 3+ raw vectors collected, OR quantum signals are already live
+  // (pretrained model seeds the PCA subspace immediately — no raw vectors needed)
+  const quantumSignalsLive = (nov.quantum_confidence != null) || (nov.swap_fidelity != null);
+  const basisMature = basisSize >= 3 || quantumSignalsLive;
   const rawFmin = nov.f_min ?? status?.f_min;
   const fmin = rawFmin ?? null;
   // Always show live V3 quantum signals — suppress alerts (not display) when basis not mature
@@ -3058,7 +3058,8 @@ function DeployDetailsSubTab({ hostname, demoMode }) {
     api.taarawareInfo().then(r => {
       if (r.ok) { setInfo(r.data); if (r.data.collection_interval) setCollInt(r.data.collection_interval); }
     }).catch(() => {});
-    api.pqcInfo().then(r => { if (r.ok) setPqcInfo(r.data); }).catch(() => {});
+    // pqcInfo is optional — oqs may not be installed; silently ignore errors, fingerprint just won't show
+    api.pqcInfo().then(r => { if (r.ok && r.data?.fingerprint) setPqcInfo(r.data); }).catch(() => {});
     api.status().then(r => { if (r.ok) setAgentStatus(r.data?.agent_status); }).catch(() => {});
   }, []);
 

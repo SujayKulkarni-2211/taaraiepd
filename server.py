@@ -1696,8 +1696,11 @@ def taaraware_deployed():
     if not platform or not platform.connected or _state["platform_type"] != "ssh":
         return {"deployed": False}
     try:
-        stdout, _, rc = platform.execute_command("test -f /opt/taaraware/taaraware_agent.py && echo yes || echo no")
-        deployed = "yes" in stdout.lower()
+        stdout, _, _ = platform.execute_command(
+            "{ test -f /opt/taaraware/taaraware_agent.py && echo yes; } || "
+            "{ test -f $HOME/taaraware/taaraware_agent.py && echo yes; } || echo no"
+        )
+        deployed = "yes" in (stdout or "").lower()
         return {"deployed": deployed}
     except Exception:
         return {"deployed": False}
