@@ -17,6 +17,9 @@ Categories:
 - Temporal Behavior (3 features)
 
 Total: 19 atomic features
+
+OS detection: runs `uname -s` on connect; switches to macOS equivalents
+automatically when the remote machine returns "Darwin".
 """
 
 import time
@@ -32,35 +35,44 @@ class AtomicDNACollector:
 
     def __init__(self, ssh_manager):
         self.ssh_manager = ssh_manager
-        self.history = []  # For temporal analysis
+        self.history = []
         self.last_collection_time = None
+        self._is_macos = None  # detected lazily on first collect
+
+    # ========================================================================
+    # OS DETECTION
+    # ========================================================================
+
+    def _detect_os(self):
+        """Run uname -s on the remote machine and cache the result."""
+        if self._is_macos is not None:
+            return
+        try:
+            out, _, _ = self.ssh_manager.execute_command("uname -s")
+            self._is_macos = out.strip().lower() == 'darwin'
+        except Exception:
+            self._is_macos = False
+
+    def _run(self, cmd_linux: str, cmd_macos: str) -> str:
+        """Run the appropriate command depending on detected OS."""
+        cmd = cmd_macos if self._is_macos else cmd_linux
+        stdout, _, _ = self.ssh_manager.execute_command(cmd)
+        return stdout or ''
 
     def collect(self) -> Dict[str, float]:
-        """
-        Collect all atomic DNA features.
+        """Collect all atomic DNA features."""
+        self._detect_os()
 
-        Returns:
-            dict: Atomic feature vector with 19+ features
-        """
         features = {}
-
-        # Collect each category
         features.update(self._collect_process_behavior())
         features.update(self._collect_network_behavior())
         features.update(self._collect_filesystem_behavior())
         features.update(self._collect_temporal_behavior())
 
-        # Store for temporal analysis
         current_time = time.time()
-        self.history.append({
-            'timestamp': current_time,
-            'features': features.copy()
-        })
-
-        # Keep only last 30 samples (for temporal analysis)
+        self.history.append({'timestamp': current_time, 'features': features.copy()})
         if len(self.history) > 30:
             self.history = self.history[-30:]
-
         self.last_collection_time = current_time
 
         return features
@@ -70,14 +82,13 @@ class AtomicDNACollector:
     # ========================================================================
 
     def _collect_process_behavior(self) -> Dict[str, float]:
-        """Collect atomic process behavior features."""
         features = {}
-
         try:
-            # Get all processes with details
-            cmd = "ps -eo pid,ppid,uid,etime,comm --no-headers"
-            stdout, _, _ = self.ssh_manager.execute_command(cmd)
-
+            # ps -eo pid,ppid,uid,etime,comm works on both Linux and macOS
+            stdout = self._run(
+                "ps -eo pid,ppid,uid,etime,comm --no-headers",
+                "ps -eo pid,ppid,uid,etime,comm"
+            )
             if not stdout:
                 return self._get_fallback_process_features()
 
@@ -99,32 +110,14 @@ class AtomicDNACollector:
             if not processes:
                 return self._get_fallback_process_features()
 
-            # Feature 1: Process spawn rate (processes per minute)
-            # Estimate: count processes < 1 minute old
-            short_lived = 0
-            for p in processes:
-                if self._parse_etime_seconds(p['etime']) < 60:
-                    short_lived += 1
-            features['proc_spawn_rate'] = float(short_lived)
-
-            # Feature 2: Short-lived process ratio
+            short_lived = sum(1 for p in processes if self._parse_etime_seconds(p['etime']) < 60)
             very_short = sum(1 for p in processes if self._parse_etime_seconds(p['etime']) < 5)
+            features['proc_spawn_rate'] = float(short_lived)
             features['proc_short_lived_ratio'] = very_short / max(len(processes), 1)
-
-            # Feature 3: Max process tree depth
             features['proc_tree_depth_max'] = float(self._compute_max_tree_depth(processes))
-
-            # Feature 4: UID diversity
-            unique_uids = len(set(p['uid'] for p in processes))
-            features['proc_uid_diversity'] = float(unique_uids)
-
-            # Feature 5: Root process ratio
-            root_procs = sum(1 for p in processes if p['uid'] == 0)
-            features['proc_root_ratio'] = root_procs / max(len(processes), 1)
-
-            # Feature 6: Command entropy
-            commands = [p['comm'] for p in processes]
-            features['proc_cmd_entropy'] = self._compute_entropy(commands)
+            features['proc_uid_diversity'] = float(len(set(p['uid'] for p in processes)))
+            features['proc_root_ratio'] = sum(1 for p in processes if p['uid'] == 0) / max(len(processes), 1)
+            features['proc_cmd_entropy'] = self._compute_entropy([p['comm'] for p in processes])
 
         except Exception as e:
             print(f"[AtomicDNA] Process collection error: {e}")
@@ -137,21 +130,27 @@ class AtomicDNACollector:
     # ========================================================================
 
     def _collect_network_behavior(self) -> Dict[str, float]:
-        """Collect atomic network behavior features."""
         features = {}
-
         try:
-            # Get network connections
-            # ss is more reliable than netstat
-            cmd = "ss -tunap 2>/dev/null || netstat -tunap 2>/dev/null || echo 'SKIP'"
-            stdout, _, _ = self.ssh_manager.execute_command(cmd)
+            if self._is_macos:
+                # netstat -an on macOS — no -p flag without sudo, but -an works fine
+                stdout = self._run(
+                    "",
+                    "netstat -an 2>/dev/null"
+                )
+            else:
+                stdout = self._run(
+                    "ss -tunap 2>/dev/null || netstat -tunap 2>/dev/null || echo 'SKIP'",
+                    ""
+                )
 
             if not stdout or stdout.strip() == 'SKIP':
                 return self._get_fallback_network_features()
 
-            connections = stdout.strip().split('\n')[1:]  # Skip header
+            connections = stdout.strip().split('\n')
+            # Skip header lines
+            connections = [l for l in connections if l and not l.startswith('Active') and not l.startswith('Proto')]
 
-            # Parse connections
             outbound = []
             failed = 0
             dst_ips = set()
@@ -162,47 +161,50 @@ class AtomicDNACollector:
                 if len(parts) < 5:
                     continue
 
-                state = parts[0] if 'tcp' in parts[0].lower() else 'UNKNOWN'
-                local_addr = parts[3] if len(parts) > 3 else ''
-                remote_addr = parts[4] if len(parts) > 4 else ''
+                if self._is_macos:
+                    # macOS netstat -an format:
+                    # Proto Recv-Q Send-Q Local-Address Foreign-Address (state)
+                    proto = parts[0]
+                    if proto not in ('tcp', 'tcp4', 'tcp6', 'udp', 'udp4', 'udp6'):
+                        continue
+                    foreign = parts[4] if len(parts) > 4 else ''
+                    state = parts[5] if len(parts) > 5 else ''
+                    if 'LISTEN' in state or foreign in ('*.*', '*.* '):
+                        continue
+                    if '.' in foreign:
+                        # macOS uses dots: 1.2.3.4.port
+                        segments = foreign.rsplit('.', 1)
+                        if len(segments) == 2:
+                            dst_ips.add(segments[0])
+                            try:
+                                dst_ports.add(int(segments[1]))
+                            except ValueError:
+                                pass
+                    outbound.append(line)
+                    if any(x in state.upper() for x in ['TIME_WAIT', 'CLOSE_WAIT', 'FIN_WAIT']):
+                        failed += 1
+                else:
+                    # Linux ss / netstat format
+                    remote_addr = parts[4] if len(parts) > 4 else ''
+                    if 'LISTEN' in line or '*:*' in remote_addr:
+                        continue
+                    if ':' in remote_addr:
+                        ip_port = remote_addr.rsplit(':', 1)
+                        if len(ip_port) == 2:
+                            dst_ips.add(ip_port[0])
+                            try:
+                                dst_ports.add(int(ip_port[1]))
+                            except ValueError:
+                                pass
+                    outbound.append(line)
+                    if any(x in line.upper() for x in ['TIME-WAIT', 'CLOSE-WAIT', 'FIN-WAIT']):
+                        failed += 1
 
-                # Skip listening sockets
-                if 'LISTEN' in state or '*:*' in remote_addr:
-                    continue
-
-                # Extract remote IP and port
-                if ':' in remote_addr:
-                    ip_port = remote_addr.rsplit(':', 1)
-                    if len(ip_port) == 2:
-                        dst_ips.add(ip_port[0])
-                        try:
-                            dst_ports.add(int(ip_port[1]))
-                        except ValueError:
-                            pass
-
-                outbound.append(line)
-
-                # Count failed connections (time-wait, close-wait)
-                if any(x in state.upper() for x in ['TIME-WAIT', 'CLOSE-WAIT', 'FIN-WAIT']):
-                    failed += 1
-
-            # Feature 1: Outbound connection rate (active connections per sample)
             features['net_outbound_conn_rate'] = float(len(outbound))
-
-            # Feature 2: Unique destination IPs
             features['net_unique_dst_ips'] = float(len(dst_ips))
-
-            # Feature 3: Unique destination ports
             features['net_unique_dst_ports'] = float(len(dst_ports))
-
-            # Feature 4: Port entropy
             features['net_port_entropy'] = self._compute_entropy(list(dst_ports))
-
-            # Feature 5: DNS query rate (estimate from /etc/resolv.conf usage)
-            # Note: This is a crude estimate; real DNS monitoring needs tcpdump
-            features['net_dns_query_rate'] = 0.0  # Placeholder - safe to skip
-
-            # Feature 6: Failed connection ratio
+            features['net_dns_query_rate'] = 0.0
             features['net_failed_conn_ratio'] = failed / max(len(outbound), 1)
 
         except Exception as e:
@@ -216,52 +218,55 @@ class AtomicDNACollector:
     # ========================================================================
 
     def _collect_filesystem_behavior(self) -> Dict[str, float]:
-        """Collect atomic filesystem behavior features."""
         features = {}
-
         try:
-            # Feature 1: Sensitive file access (check recent access to /etc, /root, ~/.ssh)
-            # We check modification times in last 5 minutes
-            sensitive_paths = ['/etc', '/root', '$HOME/.ssh']
-            sensitive_touched = 0
+            # Sensitive file access — same paths exist on macOS
+            sensitive_paths = ['/etc', '$HOME/.ssh']
+            if not self._is_macos:
+                sensitive_paths.append('/root')
 
+            sensitive_touched = 0
             for path in sensitive_paths:
                 cmd = f"find {path} -type f -mmin -5 2>/dev/null | wc -l"
                 stdout, _, _ = self.ssh_manager.execute_command(cmd)
                 try:
-                    count = int(stdout.strip())
-                    if count > 0:
+                    if int(stdout.strip()) > 0:
                         sensitive_touched = 1
                         break
                 except (ValueError, AttributeError):
                     pass
-
             features['fs_sensitive_access'] = float(sensitive_touched)
 
-            # Feature 2: File write rate (files modified in last minute)
-            cmd = "find /tmp /var/tmp /home -type f -mmin -1 2>/dev/null | wc -l"
+            # File write rate — /tmp exists on both; /dev/shm is Linux-only
+            if self._is_macos:
+                cmd = "find /tmp /private/tmp $HOME -maxdepth 2 -type f -mmin -1 2>/dev/null | wc -l"
+            else:
+                cmd = "find /tmp /var/tmp /home -type f -mmin -1 2>/dev/null | wc -l"
             stdout, _, _ = self.ssh_manager.execute_command(cmd)
             try:
                 features['fs_write_rate'] = float(stdout.strip())
             except (ValueError, AttributeError):
                 features['fs_write_rate'] = 0.0
 
-            # Feature 3: Execution from tmp (check for executables in /tmp, /dev/shm)
-            cmd = "find /tmp /dev/shm -type f -executable 2>/dev/null | wc -l"
+            # Executables in tmp — /dev/shm is Linux-only
+            if self._is_macos:
+                cmd = "find /tmp /private/tmp -type f -perm +111 2>/dev/null | wc -l"
+            else:
+                cmd = "find /tmp /dev/shm -type f -executable 2>/dev/null | wc -l"
             stdout, _, _ = self.ssh_manager.execute_command(cmd)
             try:
-                exec_count = int(stdout.strip())
-                features['fs_exec_from_tmp'] = float(min(exec_count, 1))  # Boolean-like
+                features['fs_exec_from_tmp'] = float(min(int(stdout.strip()), 1))
             except (ValueError, AttributeError):
                 features['fs_exec_from_tmp'] = 0.0
 
-            # Feature 4: Hidden file ratio (in /tmp)
-            cmd_total = "find /tmp -maxdepth 2 -type f 2>/dev/null | wc -l"
-            cmd_hidden = "find /tmp -maxdepth 2 -type f -name '.*' 2>/dev/null | wc -l"
-
-            stdout_total, _, _ = self.ssh_manager.execute_command(cmd_total)
-            stdout_hidden, _, _ = self.ssh_manager.execute_command(cmd_hidden)
-
+            # Hidden file ratio in /tmp
+            tmp_path = '/private/tmp' if self._is_macos else '/tmp'
+            stdout_total, _, _ = self.ssh_manager.execute_command(
+                f"find {tmp_path} -maxdepth 2 -type f 2>/dev/null | wc -l"
+            )
+            stdout_hidden, _, _ = self.ssh_manager.execute_command(
+                f"find {tmp_path} -maxdepth 2 -type f -name '.*' 2>/dev/null | wc -l"
+            )
             try:
                 total = int(stdout_total.strip())
                 hidden = int(stdout_hidden.strip())
@@ -280,38 +285,28 @@ class AtomicDNACollector:
     # ========================================================================
 
     def _collect_temporal_behavior(self) -> Dict[str, float]:
-        """Collect temporal rhythm features."""
         features = {}
-
         try:
-            # Feature 1: Time of day deviation (distance from typical activity hours)
             current_hour = time.localtime().tm_hour
 
-            # Compute historical activity distribution
             if len(self.history) >= 5:
                 historical_hours = [time.localtime(h['timestamp']).tm_hour for h in self.history]
                 avg_hour = sum(historical_hours) / len(historical_hours)
                 hour_std = np.std(historical_hours)
-
-                # Deviation in standard deviations
                 deviation = abs(current_hour - avg_hour) / max(hour_std, 1.0)
-                features['time_of_day_deviation'] = min(deviation, 10.0)  # Cap at 10
+                features['time_of_day_deviation'] = min(deviation, 10.0)
             else:
                 features['time_of_day_deviation'] = 0.0
 
-            # Feature 2: Burstiness score (variance in activity)
             if len(self.history) >= 3:
-                # Use process spawn rate variance as proxy
                 spawn_rates = [h['features'].get('proc_spawn_rate', 0) for h in self.history[-10:]]
                 features['burstiness_score'] = float(np.var(spawn_rates))
             else:
                 features['burstiness_score'] = 0.0
 
-            # Feature 3: Sequence compactness (how tightly actions cluster)
             if len(self.history) >= 3:
                 timestamps = [h['timestamp'] for h in self.history[-5:]]
                 time_diffs = np.diff(timestamps)
-                # Lower variance = more compact
                 features['sequence_compactness'] = 1.0 / (1.0 + float(np.var(time_diffs)))
             else:
                 features['sequence_compactness'] = 0.0
@@ -327,134 +322,92 @@ class AtomicDNACollector:
     # ========================================================================
 
     def _parse_etime_seconds(self, etime: str) -> int:
-        """Parse ps etime (elapsed time) to seconds."""
         try:
-            # Format can be: MM:SS, HH:MM:SS, DD-HH:MM:SS
             parts = etime.replace('-', ':').split(':')
             parts = [int(p) for p in parts]
-
-            if len(parts) == 2:  # MM:SS
+            if len(parts) == 2:
                 return parts[0] * 60 + parts[1]
-            elif len(parts) == 3:  # HH:MM:SS
+            elif len(parts) == 3:
                 return parts[0] * 3600 + parts[1] * 60 + parts[2]
-            elif len(parts) == 4:  # DD-HH:MM:SS
+            elif len(parts) == 4:
                 return parts[0] * 86400 + parts[1] * 3600 + parts[2] * 60 + parts[3]
-            else:
-                return 0
+            return 0
         except (ValueError, IndexError):
             return 0
 
     def _compute_max_tree_depth(self, processes: List[Dict]) -> int:
-        """Compute maximum process tree depth."""
-        # Build parent map
         children = defaultdict(list)
         for p in processes:
             children[p['ppid']].append(p['pid'])
 
-        # DFS to find max depth
         def dfs(pid, depth=0):
             if pid not in children:
                 return depth
             return max(dfs(child, depth + 1) for child in children[pid])
 
-        # Start from init (pid 1) or find roots
         roots = [p['pid'] for p in processes if p['ppid'] == 0 or p['ppid'] == 1]
         if not roots:
             roots = [1]
-
         return max(dfs(root) for root in roots)
 
     def _compute_entropy(self, items: List) -> float:
-        """Compute Shannon entropy of a list."""
         if not items:
             return 0.0
-
-        # Count frequencies
         freq = defaultdict(int)
         for item in items:
             freq[str(item)] += 1
-
         total = len(items)
         entropy = 0.0
-
         for count in freq.values():
             p = count / total
             if p > 0:
                 entropy -= p * math.log2(p)
-
         return entropy
 
     # ========================================================================
-    # FALLBACK METHODS (for safe degradation)
+    # FALLBACK METHODS
     # ========================================================================
 
     def _get_fallback_process_features(self) -> Dict[str, float]:
-        """Return safe defaults for process features."""
         return {
-            'proc_spawn_rate': 0.0,
-            'proc_short_lived_ratio': 0.0,
-            'proc_tree_depth_max': 1.0,
-            'proc_uid_diversity': 1.0,
-            'proc_root_ratio': 0.0,
-            'proc_cmd_entropy': 0.0
+            'proc_spawn_rate': 0.0, 'proc_short_lived_ratio': 0.0,
+            'proc_tree_depth_max': 1.0, 'proc_uid_diversity': 1.0,
+            'proc_root_ratio': 0.0, 'proc_cmd_entropy': 0.0
         }
 
     def _get_fallback_network_features(self) -> Dict[str, float]:
-        """Return safe defaults for network features."""
         return {
-            'net_outbound_conn_rate': 0.0,
-            'net_unique_dst_ips': 0.0,
-            'net_unique_dst_ports': 0.0,
-            'net_port_entropy': 0.0,
-            'net_dns_query_rate': 0.0,
-            'net_failed_conn_ratio': 0.0
+            'net_outbound_conn_rate': 0.0, 'net_unique_dst_ips': 0.0,
+            'net_unique_dst_ports': 0.0, 'net_port_entropy': 0.0,
+            'net_dns_query_rate': 0.0, 'net_failed_conn_ratio': 0.0
         }
 
     def _get_fallback_filesystem_features(self) -> Dict[str, float]:
-        """Return safe defaults for filesystem features."""
         return {
-            'fs_sensitive_access': 0.0,
-            'fs_write_rate': 0.0,
-            'fs_exec_from_tmp': 0.0,
-            'fs_hidden_file_ratio': 0.0
+            'fs_sensitive_access': 0.0, 'fs_write_rate': 0.0,
+            'fs_exec_from_tmp': 0.0, 'fs_hidden_file_ratio': 0.0
         }
 
     def _get_fallback_temporal_features(self) -> Dict[str, float]:
-        """Return safe defaults for temporal features."""
         return {
-            'time_of_day_deviation': 0.0,
-            'burstiness_score': 0.0,
+            'time_of_day_deviation': 0.0, 'burstiness_score': 0.0,
             'sequence_compactness': 0.0
         }
 
     def get_feature_vector(self) -> np.ndarray:
-        """
-        Collect and normalize features into a vector.
-
-        Returns:
-            np.ndarray: Normalized feature vector (19 dimensions)
-        """
         features = self.collect()
-
-        # Feature order (must be consistent!)
         feature_names = [
-            # Process (6)
             'proc_spawn_rate', 'proc_short_lived_ratio', 'proc_tree_depth_max',
             'proc_uid_diversity', 'proc_root_ratio', 'proc_cmd_entropy',
-            # Network (6)
             'net_outbound_conn_rate', 'net_unique_dst_ips', 'net_unique_dst_ports',
             'net_port_entropy', 'net_dns_query_rate', 'net_failed_conn_ratio',
-            # Filesystem (4)
             'fs_sensitive_access', 'fs_write_rate', 'fs_exec_from_tmp', 'fs_hidden_file_ratio',
-            # Temporal (3)
             'time_of_day_deviation', 'burstiness_score', 'sequence_compactness'
         ]
-
         vector = [features.get(name, 0.0) for name in feature_names]
         return np.array(vector, dtype=np.float32)
 
     def get_feature_names(self) -> List[str]:
-        """Return ordered list of feature names."""
         return [
             'proc_spawn_rate', 'proc_short_lived_ratio', 'proc_tree_depth_max',
             'proc_uid_diversity', 'proc_root_ratio', 'proc_cmd_entropy',

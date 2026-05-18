@@ -857,6 +857,75 @@ def _render_ssh_state2(platform):
 
     # ── Tab 2: Status Dashboard ─────────────────────────────────────────────
     with tab_status:
+        import numpy as _np
+        from datetime import datetime as _dt_status
+
+        _INTERNAL_KEYS = {'timestamp', 'hostname', 'time', '_proc_pair_hashes',
+                          '_bash_history_lines', '_auth_log_size'}
+
+        # ── ANOMALY ALERT BANNER — shown first, always visible ─────────────
+        active_alert = st.session_state.get('_active_anomaly_alert')
+        if active_alert:
+            affected = active_alert.get('affected_features', [])
+            score = active_alert.get('score', 0.0)
+            detected_at = active_alert.get('detected_at', '')
+            feat_str = ', '.join(f['name'] for f in affected[:5]) if affected else 'unknown'
+            st.markdown(
+                f"""<div style="background:#3a0000;border:2px solid #ff0000;border-radius:10px;
+                padding:20px;margin-bottom:20px;animation:none">
+                <h2 style="color:#ff3333;margin:0;font-size:1.8em;letter-spacing:2px">
+                ⚠ ANOMALY DETECTED</h2>
+                <p style="color:#ffaaaa;margin:8px 0 4px 0;font-size:1.1em">
+                <b>Novelty Score:</b> {score:.3f} &nbsp;|&nbsp;
+                <b>Detected:</b> {detected_at}</p>
+                <p style="color:#ffcccc;margin:4px 0">
+                <b>Elevated features:</b> {feat_str}</p>
+                </div>""",
+                unsafe_allow_html=True
+            )
+            if affected:
+                cols_a = st.columns(min(len(affected), 4))
+                for i, feat in enumerate(affected[:4]):
+                    with cols_a[i]:
+                        st.metric(
+                            feat['name'].replace('_', ' ').title(),
+                            f"{feat['current']:.3f}",
+                            delta=f"+{feat['delta']:.3f} vs baseline" if feat.get('delta') else None,
+                            delta_color="inverse"
+                        )
+            if st.button("✅ Dismiss alert", key="s2_dismiss_alert"):
+                st.session_state['_active_anomaly_alert'] = None
+                st.rerun()
+            st.markdown("---")
+
+        # ── Training status ────────────────────────────────────────────────
+        _training_mgr = st.session_state.training_mgr
+        _ts = _training_mgr.get_status() if _training_mgr else {}
+        _is_trained = _training_mgr.is_ready() if _training_mgr else False
+
+        t_col1, t_col2, t_col3, t_col4 = st.columns(4)
+        with t_col1:
+            t_color = "#00cc44" if _is_trained else "#ff8800"
+            t_label = "TRAINED" if _is_trained else "NOT TRAINED"
+            st.markdown(
+                f"<div style='background:#111;padding:12px;border-radius:8px;"
+                f"border:1px solid {t_color};text-align:center'>"
+                f"<p style='color:#888;margin:0;font-size:0.75em'>Baseline Model</p>"
+                f"<p style='color:{t_color};margin:4px 0;font-weight:bold'>{t_label}</p></div>",
+                unsafe_allow_html=True
+            )
+        with t_col2:
+            st.metric("Baseline Samples", _ts.get('baseline_samples', _ts.get('samples_collected', 0)))
+        with t_col3:
+            last_t = _ts.get('last_training_time')
+            last_t_str = _dt_status.fromtimestamp(last_t).strftime('%H:%M %d %b') if last_t else '—'
+            st.metric("Last Trained", last_t_str)
+        with t_col4:
+            st.metric("Training Mode", _ts.get('mode_name', '—') or '—')
+
+        st.markdown("---")
+
+        # ── Agent status ───────────────────────────────────────────────────
         st.markdown("### Live Agent Status")
         col_refresh, col_auto = st.columns([1, 2])
         with col_refresh:
@@ -866,7 +935,6 @@ def _render_ssh_state2(platform):
         with col_auto:
             auto_refresh = st.toggle("Auto-refresh every 30s", key="s2_auto_refresh", value=False)
 
-        # Auto-refresh logic: rerun if toggle on and 30s elapsed since last refresh
         last_refresh = st.session_state.get('_status_last_refresh', 0)
         if auto_refresh and (time.time() - last_refresh) >= 30:
             st.session_state['_agent_status'] = None
@@ -879,33 +947,37 @@ def _render_ssh_state2(platform):
 
         if auto_refresh:
             next_refresh = max(0, 30 - int(time.time() - st.session_state.get('_status_last_refresh', 0)))
-            st.caption(f"Next auto-refresh in {next_refresh}s — page will refresh automatically.")
+            st.caption(f"Next auto-refresh in {next_refresh}s")
 
         agent_status = st.session_state.get('_agent_status', {})
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             status_val = agent_status.get('status', 'unknown')
-            color = "#00cc44" if status_val == "active" else "#ff4444"
-            st.markdown(f"<div style='background:#111;padding:15px;border-radius:8px;"
-                        f"border:1px solid {color};text-align:center'>"
-                        f"<p style='color:#888;margin:0;font-size:0.8em'>Agent Status</p>"
-                        f"<p style='color:{color};margin:5px 0;font-size:1.4em;font-weight:bold'>"
-                        f"{status_val.upper()}</p></div>", unsafe_allow_html=True)
+            color = "#00cc44" if 'active' in status_val.lower() else "#ff4444"
+            st.markdown(
+                f"<div style='background:#111;padding:12px;border-radius:8px;"
+                f"border:1px solid {color};text-align:center'>"
+                f"<p style='color:#888;margin:0;font-size:0.75em'>Agent Status</p>"
+                f"<p style='color:{color};margin:4px 0;font-weight:bold'>{status_val.upper()}</p></div>",
+                unsafe_allow_html=True
+            )
         with col2:
-            buf_size = agent_status.get('buffer_size', 0)
-            st.metric("Buffer Size", f"{buf_size} samples")
+            st.metric("Buffer Size", f"{agent_status.get('buffer_size', 0)} samples")
         with col3:
-            pid = agent_status.get('pid', '—')
-            st.metric("PID", pid if pid else "—")
+            st.metric("PID", agent_status.get('pid', '—') or '—')
+        with col4:
+            st.metric("Remote OS", agent_status.get('os', '—'))
 
         if agent_status.get('recent_logs'):
             st.markdown("**Recent agent logs:**")
             st.code(agent_status['recent_logs'], language='text')
 
         st.markdown("---")
+
+        # ── Latest feature vector + novelty scoring ────────────────────────
         st.markdown("### Latest Feature Vector")
 
-        if st.button("Fetch latest feature vector", key="s2_fetch_vec"):
+        if st.button("Fetch & Analyze", key="s2_fetch_vec", type="primary"):
             with st.spinner("Reading remote buffer..."):
                 data = taaraware_mgr.collect_remote_data(platform)
                 st.session_state['_remote_buffer'] = data
@@ -913,62 +985,101 @@ def _render_ssh_state2(platform):
         data = st.session_state.get('_remote_buffer', [])
         if data:
             latest = data[-1] if data else {}
-            ts = latest.get('timestamp', latest.get('time', 'unknown'))
-            st.caption(f"Last collection: {ts}")
+            ts_raw = latest.get('timestamp', 0)
+            ts_str = _dt_status.fromtimestamp(ts_raw).strftime('%H:%M:%S %d %b') if ts_raw else 'unknown'
+            st.caption(f"Last collection: {ts_str} — {len(data)} total samples in buffer")
 
-            # Buffer entries are flat dicts — numeric features are top-level keys
-            _INTERNAL_KEYS = {'timestamp', 'hostname', 'time', '_proc_pair_hashes',
-                               '_bash_history_lines', '_auth_log_size'}
             if 'features' in latest:
                 raw_feat = latest['features']
-                if isinstance(raw_feat, dict):
-                    features = {k: v for k, v in raw_feat.items() if k not in _INTERNAL_KEYS}
-                else:
-                    features = raw_feat
+                feat_dict = {k: v for k, v in raw_feat.items() if k not in _INTERNAL_KEYS} \
+                    if isinstance(raw_feat, dict) else {}
             else:
-                # Flat dict format from TaaraWare agent
-                features = {k: v for k, v in latest.items()
-                            if k not in _INTERNAL_KEYS and isinstance(v, (int, float))}
-            if isinstance(features, dict):
-                items = list(features.items())
-            elif isinstance(features, list):
-                names = latest.get('feature_names', [f'feature_{i}' for i in range(len(features))])
-                items = list(zip(names, features))
-            else:
-                items = []
+                feat_dict = {k: v for k, v in latest.items()
+                             if k not in _INTERNAL_KEYS and isinstance(v, (int, float))}
 
-            if items:
+            if feat_dict:
                 cols = st.columns(3)
-                for i, (name, val) in enumerate(items):
+                for i, (name, val) in enumerate(feat_dict.items()):
                     with cols[i % 3]:
                         try:
-                            st.metric(str(name).replace('_', ' ').title(), f"{float(val):.3f}")
+                            st.metric(name.replace('_', ' ').title(), f"{float(val):.3f}")
                         except Exception:
-                            st.metric(str(name), str(val))
+                            st.metric(name, str(val))
 
-            training_mgr = st.session_state.training_mgr
-            if training_mgr and training_mgr.is_ready() and embedder and embedder.is_ready():
-                import numpy as np
+            # Novelty scoring — run automatically whenever data is present and model is ready
+            _tm = st.session_state.training_mgr
+            if _tm and _tm.is_ready() and embedder and embedder.is_ready() and feat_dict:
                 try:
-                    if isinstance(features, dict):
-                        fvec = np.array(list(features.values()), dtype=np.float32)
-                    else:
-                        fvec = np.array(features, dtype=np.float32)
-                    fvec = fvec[:19] if len(fvec) >= 19 else np.pad(fvec, (0, 19 - len(fvec)))
+                    fvec = _np.array(list(feat_dict.values()), dtype=_np.float32)
+                    fvec = fvec[:19] if len(fvec) >= 19 else _np.pad(fvec, (0, 19 - len(fvec)))
                     embedding = embedder.embed(fvec)
                     detection = detector.detect(embedding) if detector and detector.is_ready() else {}
                     novelty = detection.get('anomaly_score', 0.0)
                     is_novel = detection.get('is_anomaly', False)
-                    color = "#ff4444" if is_novel else "#00cc44"
-                    st.markdown(f"**Novelty Score:** <span style='color:{color}'>"
-                                f"{novelty:.3f} ({'NOVEL' if is_novel else 'Normal'})</span>",
-                                unsafe_allow_html=True)
+
+                    st.markdown("---")
+                    n_color = "#ff3333" if is_novel else "#00cc44"
+                    n_label = "NOVEL / ANOMALOUS" if is_novel else "Normal"
+                    st.markdown(
+                        f"<div style='background:#111;border:2px solid {n_color};"
+                        f"border-radius:8px;padding:15px;text-align:center'>"
+                        f"<p style='color:#888;margin:0;font-size:0.85em'>Novelty Score</p>"
+                        f"<p style='color:{n_color};font-size:2em;font-weight:bold;margin:4px 0'>"
+                        f"{novelty:.3f}</p>"
+                        f"<p style='color:{n_color};margin:0'>{n_label}</p></div>",
+                        unsafe_allow_html=True
+                    )
+
+                    if is_novel:
+                        # Compute per-feature deviation to identify what fired
+                        baseline_path = 'models/baseline_data.npy'
+                        affected_features = []
+                        if os.path.exists(baseline_path):
+                            try:
+                                baseline = _np.load(baseline_path)
+                                baseline_mean = baseline.mean(axis=0)
+                                baseline_std = baseline.std(axis=0) + 1e-8
+                                feat_values = list(feat_dict.values())[:19]
+                                feat_arr = _np.array(feat_values, dtype=_np.float32)
+                                if len(feat_arr) < 19:
+                                    feat_arr = _np.pad(feat_arr, (0, 19 - len(feat_arr)))
+                                z_scores = _np.abs((feat_arr - baseline_mean) / baseline_std)
+                                feat_names = list(feat_dict.keys())[:19]
+                                for idx in _np.argsort(z_scores)[::-1][:6]:
+                                    if z_scores[idx] > 1.5:
+                                        affected_features.append({
+                                            'name': feat_names[idx] if idx < len(feat_names) else f'feature_{idx}',
+                                            'current': float(feat_arr[idx]),
+                                            'baseline': float(baseline_mean[idx]),
+                                            'delta': float(feat_arr[idx] - baseline_mean[idx]),
+                                            'z': float(z_scores[idx]),
+                                        })
+                            except Exception:
+                                pass
+
+                        # Store alert in session state — banner renders at top on next render
+                        st.session_state['_active_anomaly_alert'] = {
+                            'score': novelty,
+                            'detected_at': _dt_status.now().strftime('%H:%M:%S'),
+                            'affected_features': affected_features,
+                        }
+
+                        # Fire into security agent to generate a proposed action
+                        try:
+                            security_agent.autonomous_analyze(
+                                platform, taara_analyzer, llm_service, embedder, detector
+                            )
+                        except Exception:
+                            pass
+
+                        st.rerun()
+
                 except Exception:
                     pass
-            else:
-                st.info("Baseline building — train the model to see novelty scores.")
+            elif _tm and not _tm.is_ready():
+                st.info("Model not trained yet — run Quick Demo Training first to enable novelty scoring.")
         else:
-            st.info("No buffer data yet. Click 'Fetch latest feature vector' above.")
+            st.info("No buffer data yet — click 'Fetch & Analyze' above.")
 
     # ── Tab 3: Agent & Actions ──────────────────────────────────────────────
     with tab_actions:

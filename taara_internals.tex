@@ -1,0 +1,1520 @@
+% ============================================================
+%  TAARA Q.0 — Complete Technical Internals Document
+%  Audience: Strong CS student, knows ML, new to security/quantum
+%  Compile: pdflatex -interaction=nonstopmode taara_internals.tex
+%           (run twice for cross-references)
+% ============================================================
+\documentclass[11pt,a4paper]{article}
+
+% ── Packages ─────────────────────────────────────────────────
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{tcolorbox}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{microtype}
+
+\usetikzlibrary{quantikz2,arrows.meta,positioning,shapes,fit,decorations.pathmorphing,
+                calc,matrix,backgrounds}
+\pgfplotsset{compat=1.18}
+\tcbuselibrary{skins,breakable}
+
+% ── Colors ───────────────────────────────────────────────────
+\definecolor{taaraRed}{HTML}{E94560}
+\definecolor{taaraBlue}{HTML}{0F3460}
+\definecolor{taaraGreen}{HTML}{00CC88}
+\definecolor{taaraYellow}{HTML}{FFB347}
+\definecolor{taaraGray}{HTML}{A0A0B0}
+\definecolor{codebg}{HTML}{F5F5F5}
+\definecolor{alertbg}{HTML}{FFF3CD}
+\definecolor{notebg}{HTML}{E8F4FD}
+\definecolor{mathbg}{HTML}{F0F8FF}
+\definecolor{critbg}{HTML}{FDE8E8}
+
+% ── Hyperref ─────────────────────────────────────────────────
+\hypersetup{
+  colorlinks=true, linkcolor=taaraBlue,
+  citecolor=taaraRed, urlcolor=taaraBlue,
+  pdftitle={TAARA Q.0 Internals},
+  pdfauthor={IEPD / GoodWinSun}
+}
+
+% ── Custom tcolorboxes ────────────────────────────────────────
+\tcbset{
+  mybox/.style={
+    enhanced, breakable, colback=#1!5!white, colframe=#1,
+    fonttitle=\bfseries\small, left=6pt, right=6pt,
+    top=4pt, bottom=4pt, boxrule=1pt
+  }
+}
+\newtcolorbox{conceptbox}[2][]{
+  mybox=taaraBlue, title={#2}, #1
+}
+\newtcolorbox{mathbox}[2][]{
+  mybox=taaraRed, title={#2}, #1
+}
+\newtcolorbox{examplebox}[2][]{
+  mybox=taaraGreen, title={#2}, #1
+}
+\newtcolorbox{warningbox}[1][]{
+  mybox=taaraYellow, title={Key Insight}, #1
+}
+\newtcolorbox{codebox}[2][]{
+  enhanced, breakable, colback=codebg, colframe=taaraGray!60,
+  fonttitle=\ttfamily\small\bfseries, title={#2}, #1,
+  boxrule=0.5pt
+}
+
+% ── Code listing style ────────────────────────────────────────
+\lstset{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true, frame=single, rulecolor=\color{taaraGray!40},
+  keywordstyle=\color{taaraBlue}\bfseries,
+  commentstyle=\color{taaraGreen!70!black},
+  stringstyle=\color{taaraRed},
+  numbers=left, numberstyle=\tiny\color{taaraGray},
+  numbersep=5pt, xleftmargin=10pt, tabsize=2
+}
+
+% ── Headers ──────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\color{taaraGray}\small TAARA Q.0 — Technical Internals}
+\rhead{\color{taaraGray}\small \thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Section style ─────────────────────────────────────────────
+\titleformat{\section}{\Large\bfseries\color{taaraBlue}}{}{0em}
+  {\thesection\quad}[\vspace{-0.3em}\rule{\linewidth}{1.5pt}]
+\titleformat{\subsection}{\large\bfseries\color{taaraBlue!80}}{}{0em}{\thesubsection\quad}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{taaraBlue!60}}{}{0em}{\thesubsubsection\quad}
+
+% ── Math operators ────────────────────────────────────────────
+\DeclareMathOperator{\MSE}{MSE}
+\newcommand{\Rn}{\mathbb{R}^n}
+\newcommand{\ket}[1]{|#1\rangle}
+\newcommand{\bra}[1]{\langle #1|}
+\newcommand{\braket}[2]{\langle #1|#2\rangle}
+\newcommand{\norm}[1]{\left\lVert#1\right\rVert}
+\newcommand{\mat}[1]{\mathbf{#1}}
+
+% ============================================================
+\begin{document}
+
+% ── Title page ────────────────────────────────────────────────
+\begin{titlepage}
+\centering
+\vspace*{2cm}
+
+\begin{tikzpicture}
+  \node[draw=taaraRed, line width=2pt, rounded corners=10pt,
+        fill=taaraBlue!8, minimum width=14cm, minimum height=4cm] (box) {};
+  \node[font=\Huge\bfseries\color{taaraRed}] at (box.center) {TAARA Q.0};
+  \node[font=\large\color{taaraBlue}, below=0.3cm of box.center] {Complete Technical Internals};
+\end{tikzpicture}
+
+\vspace{1cm}
+{\Large\color{taaraGray} From First Principles to Running Code}
+
+\vspace{0.5cm}
+\rule{12cm}{0.5pt}
+
+\vspace{0.8cm}
+{\large
+\textbf{Topics Covered:}\\[0.4cm]
+\begin{tabular}{ll}
+§1 & SSH Protocol and Why Attacks Work \\
+§2 & Why Behavioral Detection Beats Signatures \\
+§3 & Reconstruction-Based Novelty Detection (TAARA Core) \\
+§4 & The Autoencoder: Architecture and Mathematics \\
+§5 & The PennyLane Quantum Circuit: Step by Step \\
+§6 & Post-Quantum Cryptography and Kyber768 \\
+§7 & MITRE ATT\&CK Framework and Parameter Mapping \\
+§8 & GraphRAG: From Flat RAG to Knowledge Graphs \\
+§9 & The Three Hidden Parameters: Why They Are Undetectable \\
+§10 & Measurement, PDF Generation, and the Full Pipeline
+\end{tabular}
+}
+
+\vspace{1.5cm}
+\rule{12cm}{0.5pt}
+
+\vspace{0.5cm}
+{\normalsize\color{taaraGray}
+IEPD / GoodWinSun · TAARA Q.0\\
+\textit{``Prevent Crash, Preserve Cash''}\\[0.3cm]
+Audience: CS student with ML background, new to cybersecurity and quantum
+}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{SSH Protocol and How Attacks Work at the Protocol Level}
+% ============================================================
+
+\subsection{What SSH Actually Is}
+
+SSH (Secure Shell) is a cryptographic network protocol that replaces
+plaintext protocols like Telnet and rlogin. But calling it ``encrypted
+Telnet'' misses the threat model. Let's go from the TCP handshake to
+where attacks live.
+
+\begin{conceptbox}{The SSH Handshake — Layer by Layer}
+\textbf{Step 1: TCP connection.}
+The client opens a TCP connection to the server's port (default 22).
+At this point, nothing is encrypted. The server sends its \emph{banner}:
+\texttt{SSH-2.0-OpenSSH\_8.9p1}. An attacker scanning the internet
+reads this banner and knows exactly what server software version is running.
+
+\textbf{Step 2: Algorithm negotiation.}
+Client and server exchange \texttt{KEXINIT} messages listing their
+supported key exchange (kex) algorithms, ciphers, MACs, and compression
+schemes. They pick the first matching pair. If the server is misconfigured
+to support \texttt{diffie-hellman-group1-sha1} (768-bit DH, broken since 2015),
+a client can downgrade to it.
+
+\textbf{Step 3: Key exchange (Diffie-Hellman or ECDH).}
+The client and server agree on a \emph{session key} without ever transmitting it.
+After this step, all traffic is encrypted using that session key.
+The server's \emph{host key} authenticates the server's identity (prevents MITM).
+
+\textbf{Step 4: Authentication.}
+The client proves its identity — via password, public key, or certificate.
+This is where most attacks land.
+
+\textbf{Step 5: Channel multiplexing.}
+SSH multiplexes an arbitrary number of ``channels'' (shell, file transfer,
+port forwarding) over one connection.
+\end{conceptbox}
+
+\subsection{Where the Attack Surface Lives}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[every node/.style={font=\small}]
+  % Client
+  \node[draw=taaraBlue, fill=taaraBlue!10, rounded corners, minimum width=2.5cm,
+        minimum height=1cm] (cli) at (0,0) {Client};
+  % Server
+  \node[draw=taaraBlue, fill=taaraBlue!10, rounded corners, minimum width=2.5cm,
+        minimum height=1cm] (srv) at (10,0) {Server};
+  % Layers
+  \foreach \y/\label/\col in {
+    -1.5/TCP Handshake/taaraGray,
+    -3/Algorithm Negotiation/taaraYellow,
+    -4.5/Key Exchange + Auth/taaraRed,
+    -6/Channel Operations/taaraGreen
+  } {
+    \draw[->, >=Stealth, color=\col, thick] (cli.south) -- ++(0,\y-0.3)
+      -- ++(10,0) node[right, color=\col] {\label};
+  }
+  % Attack arrows
+  \node[color=taaraRed, right, font=\footnotesize] at (5,-1.5)
+    {\textit{banner reveals version}};
+  \node[color=taaraRed, right, font=\footnotesize] at (5,-3.3)
+    {\textit{downgrade attacks if weak algs enabled}};
+  \node[color=taaraRed, right, font=\footnotesize] at (5,-5)
+    {\textit{brute force, credential stuffing}};
+\end{tikzpicture}
+\caption{SSH handshake layers and where attacks occur.}
+\end{figure}
+
+The three principal attack vectors TAARA monitors:
+
+\begin{enumerate}
+\item \textbf{Brute force / credential stuffing} (MITRE T1110).
+  A server with \texttt{PasswordAuthentication yes} will accept password
+  guesses indefinitely if \texttt{MaxAuthTries} is not set. Attackers run
+  tools like Hydra or Medusa, trying passwords from breach databases.
+  The key technical fact: each failed attempt appears in \texttt{/var/log/auth.log}
+  as a line like:\\
+  \texttt{Failed password for root from 1.2.3.4 port 47291 ssh2}
+
+\item \textbf{Privilege escalation via root login} (MITRE T1078).
+  If \texttt{PermitRootLogin yes}, a successful authentication gives
+  the attacker UID 0 immediately — no lateral movement required.
+
+\item \textbf{Lateral movement via misconfigured forwarding} (MITRE T1021.004).
+  SSH agent forwarding (\texttt{AllowAgentForwarding yes}) lets the
+  attacker on a compromised intermediate host use the victim's SSH keys
+  to pivot to other servers without ever seeing the private key material.
+\end{enumerate}
+
+\begin{examplebox}{Worked Example: What Happens in a Brute-Force Attack}
+\textbf{Setup:} A server runs OpenSSH with \texttt{PasswordAuthentication yes}
+and \texttt{MaxAuthTries 6} (the default).
+
+\textbf{What the attacker's tool does:}
+\begin{enumerate}
+  \item Connects TCP to port 22. Reads banner: knows it's OpenSSH 8.9.
+  \item Sends \texttt{SSH\_MSG\_USERAUTH\_REQUEST} for user \texttt{root},
+        auth-type \texttt{password}, value \texttt{admin123}.
+  \item Server replies \texttt{SSH\_MSG\_USERAUTH\_FAILURE}.
+  \item Repeats up to 6 times per connection before being disconnected.
+  \item Opens a new connection and tries 6 more passwords.
+\end{enumerate}
+
+\textbf{What TAARA records:} For each authentication window (say, 5 minutes),
+TAARA extracts the feature vector $\mathbf{x}_t \in \mathbb{R}^7$ from auth.log:
+\[
+\mathbf{x}_t = [\underbrace{247}_{\text{failed}},\; \underbrace{2}_{\text{accepted}},\;
+\underbrace{189}_{\text{invalid users}},\; \underbrace{1}_{\text{established}},\;
+\underbrace{43}_{\text{unique src IPs}},\; \underbrace{5}_{\text{findings}},\;
+\underbrace{125}_{\text{severity score}}]
+\]
+
+In a normal window, \texttt{failed\_logins}$\approx 3$, \texttt{unique\_src\_ips}$\approx 1$.
+The residual $\Delta_t = \mathbf{x}_t - \hat{\mathbf{x}}_t$ is
+far outside the memory basis — TAARA flags it as novel.
+\end{examplebox}
+
+% ============================================================
+\section{Why Behavioral Detection Beats Signatures}
+% ============================================================
+
+\subsection{The Signature Approach and Its Fundamental Limit}
+
+A signature-based IDS (like Snort or Suricata) contains rules of the form:
+\begin{center}
+  \texttt{alert tcp any any -> \$HOME\_NET 22 (msg:"SSH Brute Force"; \ldots)}
+\end{center}
+
+The rule fires if it sees a pattern it already knows. This creates a
+fundamental asymmetry: \emph{the defender must know the attack before the attack
+happens.} The attacker needs to be novel exactly once.
+
+\begin{warningbox}
+The signature approach asks: \textit{``Does this look like a known attack?''}\\
+The behavioral approach asks: \textit{``Does this look like this specific system behaving normally?''}\\[0.3em]
+These are different questions. The second one can catch attacks that have never been seen before.
+\end{warningbox}
+
+\subsection{The Threshold Problem}
+
+Classical anomaly detectors (z-score, isolation forest, OCSVM) set a threshold $\tau$:
+\[
+\text{alert if } d(\mathbf{x}_t, \mu) > \tau
+\]
+where $\mu$ is the mean of observed behavior and $d$ is some distance function.
+
+\textbf{The problem:} $\tau$ is a hyperparameter. If $\tau$ is too low,
+you get false positives (alert fatigue). Too high, you miss attacks.
+Worse: the optimal $\tau$ for one identity (a developer machine that runs
+many processes) is completely different from another (a production database
+server that barely changes). You end up tuning $\tau$ per-identity,
+which requires labeled attack data you rarely have.
+
+TAARA eliminates $\tau$ by replacing the fixed threshold with a
+\emph{relative criterion} based on the identity's own history.
+
+% ============================================================
+\section{Reconstruction-Based Novelty Detection: The TAARA Core}
+% ============================================================
+
+\subsection{The Core Idea}
+
+Imagine you have observed a system for 30 days. You have 30 ``behavioral
+state'' vectors. Now on day 31, a new state arrives. TAARA asks:
+
+\begin{center}
+\textit{Can this new state be expressed as a linear combination of my prior observations?}
+\end{center}
+
+If yes: the new state is in the \emph{span} of prior behavior. Not novel.
+If no: the new state contains a component orthogonal to everything seen before.
+That orthogonal component is the residual. The larger it is (relative to
+prior residuals), the more novel the behavior.
+
+\subsection{Per-Identity Memory Basis}
+
+For each monitored entity (a server, a user account, a container),
+TAARA maintains a \emph{memory basis}:
+\[
+\mathcal{M}_u = \{\mathbf{m}_1, \mathbf{m}_2, \ldots, \mathbf{m}_k\}
+\quad \mathbf{m}_i \in \mathbb{R}^n
+\]
+where $u$ is the identity label (e.g., \texttt{ssh\_server}, \texttt{user:alice}).
+
+The basis matrix is:
+\[
+\mat{M} = [\mathbf{m}_1 \mid \mathbf{m}_2 \mid \cdots \mid \mathbf{m}_k]
+\in \mathbb{R}^{n \times k}
+\]
+Columns of $\mat{M}$ are the stored behavioral states.
+The \emph{column space} of $\mat{M}$, written $\text{col}(\mat{M})$, is the
+subspace spanned by all previously observed behaviors.
+
+\subsection{Least-Squares Projection}
+
+Given a new observation $\mathbf{x}_t \in \mathbb{R}^n$, we find
+the best approximation $\hat{\mathbf{x}}_t$ that lies in $\text{col}(\mat{M})$:
+
+\begin{mathbox}{Equations 3–5: Reconstruction via Least-Squares Projection}
+\[
+\hat{\mathbf{x}}_t = \mat{M} \left(\mat{M}^\top \mat{M}\right)^{-1} \mat{M}^\top \mathbf{x}_t
+\tag{3}
+\]
+\[
+\boldsymbol{\Delta}_t = \mathbf{x}_t - \hat{\mathbf{x}}_t \tag{4}
+\]
+\[
+\norm{\boldsymbol{\Delta}_t} = \sqrt{\sum_{i=1}^{n} \Delta_{t,i}^2} \tag{5}
+\]
+\end{mathbox}
+
+\textbf{Why this formula?} The expression $\mat{M}(\mat{M}^\top\mat{M})^{-1}\mat{M}^\top$
+is the \emph{orthogonal projection matrix} onto $\text{col}(\mat{M})$.
+It's the unique linear operator that:
+\begin{itemize}
+  \item Is idempotent: $\mat{P}^2 = \mat{P}$ (projecting twice = projecting once)
+  \item Is symmetric: $\mat{P}^\top = \mat{P}$
+  \item Maps anything in $\text{col}(\mat{M})$ to itself
+  \item Maps $\hat{\mathbf{x}}_t$ to the closest point in $\text{col}(\mat{M})$ to $\mathbf{x}_t$
+\end{itemize}
+
+\begin{examplebox}{Worked Numerical Example: Projection}
+\textbf{Setup:} 3-dimensional behavior space ($n=3$).
+Memory basis has 2 stored states:
+\[
+\mat{M} = \begin{bmatrix} 1 & 0 \\ 0 & 1 \\ 0 & 0 \end{bmatrix}
+\]
+These span the $xy$-plane. A new observation:
+$\mathbf{x}_t = [2,\; 3,\; 5]^\top$
+
+\textbf{Compute projection:}
+\[
+\mat{M}^\top\mat{M} = \begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix}, \quad
+(\mat{M}^\top\mat{M})^{-1} = \begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix}
+\]
+\[
+\hat{\mathbf{x}}_t = \mat{M} \cdot \mat{I} \cdot \mat{M}^\top \mathbf{x}_t
+= \begin{bmatrix} 1 & 0 \\ 0 & 1 \\ 0 & 0 \end{bmatrix}
+  \begin{bmatrix} 2 \\ 3 \end{bmatrix} = \begin{bmatrix} 2 \\ 3 \\ 0 \end{bmatrix}
+\]
+\textbf{Residual:}
+$\boldsymbol{\Delta}_t = [2,3,5]^\top - [2,3,0]^\top = [0,0,5]^\top$
+
+$\norm{\boldsymbol{\Delta}_t} = 5$. \textbf{Interpretation:} the new behavior
+has a component of magnitude 5 in the $z$-direction, which the memory basis
+has never seen. That ``$z$-axis'' behavior is completely new.
+\end{examplebox}
+
+\subsection{Threshold-Free Novelty Criterion}
+
+\begin{mathbox}{Equation 6: Novelty Without a Fixed Threshold}
+\[
+\text{Novel}(t) = \mathbf{1}\left[\norm{\boldsymbol{\Delta}_t} > \max_{i < t} \norm{\boldsymbol{\Delta}_i}\right]
+\tag{6}
+\]
+\end{mathbox}
+
+This says: ``Flag this observation as novel if and only if its residual is
+strictly larger than every residual seen before from this identity.''
+
+\textbf{Why this is powerful:} There is no global threshold. A developer
+machine that runs 400 processes may have a large normal residual norm of 15.0.
+A production database that barely changes may have a normal residual norm of 0.3.
+An attacker who causes a residual of 1.0 on the database is flagged.
+The same attacker on the developer machine is not. This is correct:
+the database doing something unusual is the signal; the developer machine
+fluctuating is noise.
+
+\subsection{Bootstrap Phase}
+
+For a new identity (first connection), TAARA doesn't have a baseline yet.
+The first \textbf{3 observations} are used to build the initial basis without
+triggering alerts. After 3 observations, detection begins.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=1.2cm,
+  box/.style={draw, rounded corners, fill=taaraBlue!10, minimum width=3.5cm,
+               minimum height=0.7cm, font=\small}
+]
+  \node[box] (obs) {New observation $\mathbf{x}_t$};
+  \node[box, below of=obs] (boot) {Bootstrap phase? ($k < 3$)};
+  \node[box, below left=0.8cm and 0.5cm of boot, fill=taaraGreen!20] (add)
+    {Add to basis, no alert};
+  \node[box, below right=0.8cm and 0.5cm of boot, fill=taaraRed!10] (proj)
+    {Project onto $\text{col}(\mat{M})$, compute $\boldsymbol{\Delta}_t$};
+  \node[box, below of=proj] (thresh) {$\norm{\boldsymbol{\Delta}_t} > \max_{i<t}\norm{\boldsymbol{\Delta}_i}$?};
+  \node[box, below left=0.8cm and 0.5cm of thresh, fill=taaraGreen!20] (notnovel)
+    {Update basis, update max};
+  \node[box, below right=0.8cm and 0.5cm of thresh, fill=taaraRed!20] (novel)
+    {Novel! $\rightarrow$ Quantum validation};
+  \draw[->, >=Stealth] (obs) -- (boot);
+  \draw[->, >=Stealth] (boot) -- node[left, font=\scriptsize]{Yes} (add);
+  \draw[->, >=Stealth] (boot) -- node[right, font=\scriptsize]{No} (proj);
+  \draw[->, >=Stealth] (proj) -- (thresh);
+  \draw[->, >=Stealth] (thresh) -- node[left, font=\scriptsize]{No} (notnovel);
+  \draw[->, >=Stealth] (thresh) -- node[right, font=\scriptsize]{Yes} (novel);
+\end{tikzpicture}
+\caption{TAARA core detection pipeline.}
+\end{figure}
+
+% ============================================================
+\section{The Autoencoder: Architecture and Mathematics}
+% ============================================================
+
+\subsection{Why Use an Autoencoder Here?}
+
+An autoencoder does the same thing as the reconstruction above, but with a
+\emph{non-linear} mapping learned from data. The key advantage: a 19-dimensional
+raw feature vector may have a highly non-linear manifold of ``normal'' behavior.
+A linear projection (§3) can miss non-linear deviations. The autoencoder learns
+the shape of normal behavior non-linearly.
+
+\subsection{Architecture}
+
+The TAARA autoencoder (in \texttt{dna\_autoencoder.py}) has:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lllr@{}}
+\toprule
+Layer & Type & Activation & Dimension \\
+\midrule
+Input & --- & --- & 19 \\
+Encoder hidden & Linear + Dropout(0.1) & ReLU & 64 \\
+Bottleneck & Linear & ReLU & 64 \\
+Decoder hidden & Linear + Dropout(0.1) & ReLU & 64 \\
+Output & Linear & (none) & 19 \\
+\bottomrule
+\end{tabular}
+\caption{TAARA autoencoder layer sizes.}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.9, every node/.style={font=\small}]
+  % Input neurons
+  \foreach \i in {1,...,5} {
+    \node[draw=taaraBlue, circle, minimum size=0.4cm, fill=taaraBlue!20]
+      (x\i) at (0, {-\i*0.7+2.1}) {};
+  }
+  \node at (0, -2.5) {$\vdots$};
+  \node[font=\footnotesize, below] at (0,-3.1) {19 inputs};
+
+  % Encoder hidden
+  \foreach \i in {1,...,6} {
+    \node[draw=taaraYellow!80!black, circle, minimum size=0.4cm, fill=taaraYellow!30]
+      (h1\i) at (2.5, {-\i*0.55+1.9}) {};
+  }
+  \node at (2.5, -2.0) {$\vdots$};
+  \node[font=\footnotesize, below] at (2.5,-2.5) {64 neurons};
+
+  % Bottleneck
+  \foreach \i in {1,...,4} {
+    \node[draw=taaraRed, circle, minimum size=0.4cm, fill=taaraRed!20]
+      (bn\i) at (5, {-\i*0.6+1.4}) {};
+  }
+  \node at (5,-1.8) {$\vdots$};
+  \node[font=\footnotesize, below] at (5,-2.3) {64 bottleneck};
+
+  % Decoder hidden
+  \foreach \i in {1,...,6} {
+    \node[draw=taaraYellow!80!black, circle, minimum size=0.4cm, fill=taaraYellow!30]
+      (h2\i) at (7.5, {-\i*0.55+1.9}) {};
+  }
+  \node at (7.5,-2.0) {$\vdots$};
+  \node[font=\footnotesize, below] at (7.5,-2.5) {64 neurons};
+
+  % Output
+  \foreach \i in {1,...,5} {
+    \node[draw=taaraBlue, circle, minimum size=0.4cm, fill=taaraGreen!30]
+      (o\i) at (10, {-\i*0.7+2.1}) {};
+  }
+  \node at (10,-2.5) {$\vdots$};
+  \node[font=\footnotesize, below] at (10,-3.1) {19 outputs ($\hat{\mathbf{x}}$)};
+
+  % Connections (sampled)
+  \foreach \i in {1,...,5} {
+    \foreach \j in {1,...,6} {
+      \draw[->, >=Stealth, taaraBlue!20, line width=0.3pt] (x\i) -- (h1\j);
+    }
+  }
+  \foreach \i in {1,...,6} {
+    \foreach \j in {1,...,4} {
+      \draw[->, >=Stealth, taaraYellow!40, line width=0.3pt] (h1\i) -- (bn\j);
+    }
+  }
+  \foreach \i in {1,...,4} {
+    \foreach \j in {1,...,6} {
+      \draw[->, >=Stealth, taaraRed!30, line width=0.3pt] (bn\i) -- (h2\j);
+    }
+  }
+  \foreach \i in {1,...,6} {
+    \foreach \j in {1,...,5} {
+      \draw[->, >=Stealth, taaraGreen!30, line width=0.3pt] (h2\i) -- (o\j);
+    }
+  }
+  % Labels
+  \node[above, font=\small\bfseries\color{taaraBlue}] at (0, 2.5) {Input};
+  \node[above, font=\small\bfseries\color{taaraYellow!80!black}] at (2.5, 2.5) {Enc.};
+  \node[above, font=\small\bfseries\color{taaraRed}] at (5, 2.0) {Bottleneck};
+  \node[above, font=\small\bfseries\color{taaraYellow!80!black}] at (7.5, 2.5) {Dec.};
+  \node[above, font=\small\bfseries\color{taaraGreen!60!black}] at (10, 2.5) {Output};
+  % Residual arrow
+  \draw[<->, >=Stealth, taaraRed, thick, dashed]
+    (0,-3.5) -- node[below, font=\small] {$\boldsymbol{\Delta} = \mathbf{x} - \hat{\mathbf{x}}$} (10,-3.5);
+\end{tikzpicture}
+\caption{Autoencoder architecture. The bottleneck forces the network to learn
+a compact representation. Reconstruction error on \emph{new} data = anomaly signal.}
+\end{figure}
+
+\subsection{Training: Only on Benign Data}
+
+\begin{mathbox}{Loss Function and Training Objective}
+The autoencoder minimizes Mean Squared Error (MSE) reconstruction loss
+over the training set $\mathcal{D} = \{\mathbf{x}_1, \ldots, \mathbf{x}_N\}$
+of \textbf{benign-only} observations:
+\[
+\mathcal{L}(\theta) = \frac{1}{N} \sum_{i=1}^{N} \norm{\mathbf{x}_i - f_\theta(\mathbf{x}_i)}^2
+\]
+where $f_\theta: \mathbb{R}^{19} \to \mathbb{R}^{19}$ is the autoencoder
+(encoder $\circ$ decoder), parameterized by weights $\theta$.
+
+Adam optimizer: $\theta_{t+1} = \theta_t - \alpha \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}$
+
+where $\hat{m}_t$ and $\hat{v}_t$ are bias-corrected first and second moment estimates.
+Learning rate $\alpha = 0.001$, $\epsilon = 10^{-8}$.
+\end{mathbox}
+
+\textbf{Why train only on benign data?} This is the core of semi-supervised
+anomaly detection. The autoencoder learns to reconstruct \emph{normal} behavior.
+When an attack occurs, the input is outside the distribution the network
+was trained on. The network has no way to reconstruct it well, so the
+reconstruction error spikes. We never needed labeled attack examples.
+
+\subsection{The 19 Input Features}
+
+From \texttt{taaraware\_manager.py}, the TaaraWare agent on the customer server
+collects:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}rll@{}}
+\toprule
+Index & Feature Name & What it Measures \\
+\midrule
+0 & \texttt{proc\_spawn\_rate} & Processes with runtime $<$ 60s \\
+1 & \texttt{proc\_short\_lived\_ratio} & Fraction with runtime $<$ 5s \\
+2 & \texttt{proc\_uid\_diversity} & Distinct UIDs running processes \\
+3 & \texttt{proc\_root\_ratio} & Fraction of processes as root \\
+4 & \texttt{proc\_cmd\_entropy} & Shannon entropy of command names \\
+5 & \texttt{net\_outbound\_conn\_rate} & Total outbound connections \\
+6 & \texttt{net\_unique\_dst\_ips} & Distinct destination IPs \\
+7 & \texttt{net\_unique\_dst\_ports} & Distinct destination ports \\
+8 & \texttt{net\_port\_entropy} & Shannon entropy of destination ports \\
+9 & \texttt{net\_failed\_conn\_ratio} & Fraction of failed connections \\
+10 & \texttt{cpu\_usage} & CPU utilization (\%) \\
+11 & \texttt{memory\_usage} & Memory utilization (\%) \\
+12 & \texttt{disk\_usage} & Disk utilization (\%) \\
+13 & \texttt{temporal\_rhythm\_deviation} & Hidden (§9) \\
+14 & \texttt{causal\_chain\_novelty} & Hidden (§9) \\
+15 & \texttt{concealment\_signal} & Hidden (§9) \\
+16--18 & (reserved) & future use \\
+\bottomrule
+\end{tabular}
+\caption{TAARA's 19 behavioral features. Features 13–15 are hidden (§9).}
+\end{table}
+
+\subsection{Shannon Entropy: Why It Matters}
+
+Feature 4 and 8 use Shannon entropy $H$:
+\[
+H(X) = -\sum_{x \in \mathcal{X}} p(x) \log_2 p(x)
+\]
+
+\textbf{Intuition for security:} A normal server runs the same 15 processes
+repeatedly: \texttt{sshd}, \texttt{nginx}, \texttt{postgres}, etc.
+Low entropy. An attacker running a port scan launches dozens of ephemeral
+probe processes with random names. High entropy. A cryptominer spawns
+one long-running process with an unusual name — changes the entropy signature
+without changing the count.
+
+\begin{examplebox}{Entropy Example: Normal vs Under Attack}
+\textbf{Normal (10 windows, 3 unique commands: sshd, nginx, postgres):}\\
+$p(\texttt{sshd}) = 0.6,\; p(\texttt{nginx}) = 0.3,\; p(\texttt{postgres}) = 0.1$
+\[
+H = -(0.6\log_2 0.6 + 0.3\log_2 0.3 + 0.1\log_2 0.1) \approx 1.30 \text{ bits}
+\]
+
+\textbf{Under attack (port scan spawns 8 unique probe commands, uniform):}\\
+$p(\text{each}) = 0.125$
+\[
+H = -8 \cdot 0.125 \log_2 0.125 = -8 \cdot 0.125 \cdot (-3) = 3.0 \text{ bits}
+\]
+
+The entropy feature jumps from 1.30 to 3.0 — a 2.3$\times$ increase.
+The autoencoder, trained only on windows with entropy $\approx 1.30$,
+will fail to reconstruct this window and produce high $\|\Delta\|$.
+\end{examplebox}
+
+% ============================================================
+\section{The PennyLane Quantum Circuit: Step by Step}
+% ============================================================
+
+\subsection{What Quantum Computing Actually Is (Honest)}
+
+A classical bit is either 0 or 1. A qubit is described by a state:
+\[
+\ket{\psi} = \alpha\ket{0} + \beta\ket{1}, \quad |\alpha|^2 + |\beta|^2 = 1
+\]
+where $\alpha, \beta \in \mathbb{C}$ are \emph{probability amplitudes}.
+$|\alpha|^2$ is the probability of measuring 0; $|\beta|^2$ of measuring 1.
+
+\textbf{Important for TAARA:} We run PennyLane on a \emph{classical simulator}.
+There is no quantum speedup claim. The value is purely in the
+\emph{mathematical structure} of quantum fidelity as a principled,
+parameter-free directionality measure.
+
+\subsection{4-Qubit System: The State Space}
+
+With 4 qubits, the computational basis has $2^4 = 16$ states:
+$\ket{0000}, \ket{0001}, \ldots, \ket{1111}$.
+
+A general 4-qubit state is:
+\[
+\ket{\psi} = \sum_{i=0}^{15} c_i \ket{i}, \qquad \sum_{i=0}^{15} |c_i|^2 = 1
+\]
+
+This 16-dimensional complex unit vector is exactly what we need to encode
+our residual $\boldsymbol{\Delta}_t \in \mathbb{R}^n$.
+
+\subsection{Amplitude Encoding}
+
+To encode a real vector $\mathbf{v} \in \mathbb{R}^{16}$ into a quantum state:
+\begin{enumerate}
+  \item Normalize: $\hat{\mathbf{v}} = \mathbf{v} / \norm{\mathbf{v}}$
+  \item Pad to 16 dimensions if needed (residual has $n \leq 7$ dims in TAARA)
+  \item Set: $c_i = \hat{v}_i$ (real amplitudes)
+\end{enumerate}
+
+The resulting state $\ket{\psi} = \sum_{i=0}^{15} \hat{v}_i \ket{i}$
+encodes the \emph{direction} of $\mathbf{v}$ in Hilbert space.
+The magnitude is lost (everything is normalized to the unit sphere).
+This is intentional: we care about \emph{which direction} the residual points,
+not how large it is.
+
+\subsection{The Circuit}
+
+The TAARA quantum circuit (from \texttt{quantum\_engine.py}):
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+  % Define qubit lines
+  \foreach \q/\label in {0/q_3, 1/q_2, 2/q_1, 3/q_0} {
+    \node[left, font=\small] at (-0.3, {-\q*1.2}) {$\ket{\label}$};
+    \draw[thick] (0, {-\q*1.2}) -- (12, {-\q*1.2});
+  }
+  % AmplitudeEmbedding (gate box)
+  \node[draw=taaraBlue, fill=taaraBlue!15, minimum width=1.2cm, minimum height=4.8cm,
+        rounded corners=3pt, font=\scriptsize\bfseries] at (1, -1.8) {$\ket{\psi}$\\AmpEmb};
+
+  % Hadamard gates
+  \foreach \q in {0,1,2,3} {
+    \node[draw=taaraYellow!80!black, fill=taaraYellow!30, minimum size=0.5cm,
+          font=\scriptsize\bfseries] at (2.8, {-\q*1.2}) {H};
+  }
+
+  % Ring CNOT: 0->1, 1->2, 2->3, 3->0
+  % CNOT 0->1
+  \filldraw[taaraRed] (4.5, 0) circle (0.12cm);
+  \draw[taaraRed, thick] (4.5, 0) -- (4.5, -1.2);
+  \draw[taaraRed, thick] (4.5,-1.2) circle (0.2cm);
+  \draw[taaraRed, thick] (4.3,-1.2) -- (4.7,-1.2);
+  % CNOT 1->2
+  \filldraw[taaraRed] (5.5, -1.2) circle (0.12cm);
+  \draw[taaraRed, thick] (5.5,-1.2) -- (5.5,-2.4);
+  \draw[taaraRed, thick] (5.5,-2.4) circle (0.2cm);
+  \draw[taaraRed, thick] (5.3,-2.4) -- (5.7,-2.4);
+  % CNOT 2->3
+  \filldraw[taaraRed] (6.5, -2.4) circle (0.12cm);
+  \draw[taaraRed, thick] (6.5,-2.4) -- (6.5,-3.6);
+  \draw[taaraRed, thick] (6.5,-3.6) circle (0.2cm);
+  \draw[taaraRed, thick] (6.3,-3.6) -- (6.7,-3.6);
+  % CNOT 3->0 (ring)
+  \filldraw[taaraRed] (7.5, -3.6) circle (0.12cm);
+  \draw[taaraRed, thick] (7.5,-3.6) -- (7.5,0.5) -- (7.8,0.5) -- (7.8,0);
+  \draw[taaraRed, thick] (7.8,0) circle (0.2cm);
+  \draw[taaraRed, thick] (7.6,0) -- (8.0,0);
+
+  % RX RY RZ on each qubit
+  \foreach \q in {0,1,2,3} {
+    \node[draw=taaraGreen!60!black, fill=taaraGreen!20, minimum width=0.45cm,
+          minimum height=0.35cm, font=\tiny\bfseries]
+      at (9.3, {-\q*1.2}) {RX};
+    \node[draw=taaraGreen!60!black, fill=taaraGreen!20, minimum width=0.45cm,
+          minimum height=0.35cm, font=\tiny\bfseries]
+      at (10.1, {-\q*1.2}) {RY};
+    \node[draw=taaraGreen!60!black, fill=taaraGreen!20, minimum width=0.45cm,
+          minimum height=0.35cm, font=\tiny\bfseries]
+      at (10.9, {-\q*1.2}) {RZ};
+  }
+  % Measurement symbols
+  \foreach \q in {0,1,2,3} {
+    \node[draw, fill=white, minimum size=0.4cm, font=\tiny] at (11.9, {-\q*1.2}) {M};
+  }
+  % Labels below
+  \node[font=\footnotesize, below] at (1,-4.2) {Amp. Embed.};
+  \node[font=\footnotesize, below] at (2.8,-4.2) {Hadamard};
+  \node[font=\footnotesize, below, text=taaraRed] at (6,-4.2) {Ring CNOT};
+  \node[font=\footnotesize, below] at (10.1,-4.2) {Rotations ($\pi/4$)};
+  \node[font=\footnotesize, below] at (11.9,-4.2) {Measure};
+\end{tikzpicture}
+\caption{TAARA 4-qubit circuit. Depth: 5 gate layers. Parameters: 12 fixed rotation angles.}
+\end{figure}
+
+\subsubsection{Gate 1: AmplitudeEmbedding}
+
+Encodes the normalized residual vector into the initial state:
+\[
+\text{AmpEmb}(\hat{\mathbf{v}}): \ket{0000} \mapsto \sum_{i=0}^{15} \hat{v}_i \ket{i}
+\]
+This is implemented by PennyLane as a sequence of single-qubit and
+two-qubit rotations that prepare the exact target amplitude distribution.
+
+\subsubsection{Gate 2: Hadamard}
+
+The Hadamard gate is:
+\[
+H = \frac{1}{\sqrt{2}}\begin{pmatrix} 1 & 1 \\ 1 & -1 \end{pmatrix}
+\]
+Applied to each qubit, it creates superposition. More importantly for fidelity:
+it spreads the amplitude information across all basis states, ensuring that
+small differences in the input vector produce measurable differences
+in the output state.
+
+\subsubsection{Gate 3: Ring CNOT (Entanglement)}
+
+The CNOT (controlled-NOT) gate:
+\[
+\text{CNOT} = \begin{pmatrix} 1 & 0 & 0 & 0 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 0 & 1 \\ 0 & 0 & 1 & 0 \end{pmatrix}
+\]
+In the ring topology (qubit 0 controls 1, 1 controls 2, 2 controls 3, 3 controls 0),
+this creates \emph{entanglement} between all qubits. The result: the quantum state
+now encodes correlations between features. An attacker who is trying to manipulate
+one dimension of the feature vector must simultaneously manipulate all 4 qubits
+(which requires knowing the full Kyber768 shared secret — see §6).
+
+\subsubsection{Gates 4–6: Parameterized Rotations}
+
+RX, RY, RZ with angle $\theta = \pi/4 \approx 0.785$ radians:
+\[
+R_X(\theta) = \begin{pmatrix} \cos(\theta/2) & -i\sin(\theta/2) \\ -i\sin(\theta/2) & \cos(\theta/2) \end{pmatrix}
+= \begin{pmatrix} 0.924 & -0.383i \\ -0.383i & 0.924 \end{pmatrix}
+\]
+These rotations spread amplitude between $\ket{0}$ and $\ket{1}$ components
+of each qubit. The angle $\pi/4$ is chosen as the geometric midpoint of
+the rotation space — no fine-tuning, no free parameters.
+
+\subsection{Quantum Fidelity: The Core Measurement}
+
+\begin{mathbox}{Equations 7–9: Fidelity in TAARA}
+Encode residual $\boldsymbol{\Delta}_t$ into quantum state:
+\[
+\hat{\boldsymbol{\Delta}} = \boldsymbol{\Delta}_t / \norm{\boldsymbol{\Delta}_t}, \quad
+\ket{\psi_t} = \sum_{i=0}^{15} \hat{\Delta}_i \ket{i} \tag{7-8}
+\]
+Fidelity between current state and a memory state:
+\[
+F(\ket{\psi_t}, \ket{\psi_m}) = |\braket{\psi_t}{\psi_m}|^2 \tag{9}
+\]
+Minimum fidelity over all memory states:
+\[
+F_{\min}(t) = \min_{m \in \mathcal{M}_u} F(\ket{\psi_t}, \ket{\psi_m})
+\]
+\textbf{Quantum-confirmed novelty:} $F_{\min}(t) < 0.5$
+\end{mathbox}
+
+\textbf{Why 0.5?} This threshold is geometric, not empirical.
+$F = 1.0$ means the two states are identical (same direction).
+$F = 0.0$ means the states are orthogonal (completely different directions).
+$F = 0.5$ is the geometric midpoint: the current state is as ``close'' to
+the memory as it is ``far.'' Below 0.5, the new state is more orthogonal
+than parallel — it genuinely occupies a new direction in behavior space.
+
+\begin{examplebox}{Fidelity Worked Example}
+\textbf{Normal day:} Residual $\boldsymbol{\Delta}_t = [1, 0, 0, 0]^\top$,
+normalized: $\hat{\boldsymbol{\Delta}} = [1, 0, 0, 0]^\top$.
+Memory state $\ket{\psi_m}$ was encoded from $[0.9, 0.4, 0, 0]^\top$, normalized: $\approx [0.914, 0.406, 0, 0]^\top$.
+
+Fidelity $F = |\braket{\psi_t}{\psi_m}|^2 = |1 \cdot 0.914 + 0 + 0 + 0|^2 = 0.914^2 = 0.835$.
+
+$F = 0.835 > 0.5$: normal, within baseline direction.
+
+\textbf{Attack day:} Residual $\boldsymbol{\Delta}_t = [0, 0, 1, 0]^\top$ (novelty in 3rd dimension).
+Fidelity $F = |0 \cdot 0.914 + 0 \cdot 0.406 + 1 \cdot 0 + 0|^2 = 0.0$.
+
+$F = 0.0 < 0.5$: quantum-confirmed novel. The new residual is completely
+orthogonal to every prior memory state.
+\end{examplebox}
+
+\subsection{Implementation: How the Fidelity Circuit Works in \texttt{query\_knowledge\_base.py}}
+
+For the GraphRAG use case (scoring config deviation from policy), the circuit
+is slightly different. It computes the probability of measuring $\ket{0000}$
+after applying one amplitude embedding followed by the adjoint of the other:
+
+\[
+F = |\braket{\psi_a}{\psi_b}|^2 = \left|\bra{0000}\, U_b^\dagger U_a \,\ket{0000}\right|^2
+\]
+
+where $U_a$ encodes vector $\mathbf{a}$ and $U_b^\dagger$ is the inverse
+(adjoint) of the encoding for $\mathbf{b}$. The $\ket{0000}$ outcome probability
+from the composed circuit equals the inner product squared.
+This uses PennyLane's \texttt{qml.adjoint()} to efficiently compute the overlap.
+
+% ============================================================
+\section{Post-Quantum Cryptography and Kyber768}
+% ============================================================
+
+\subsection{Why Classical Cryptography Is Threatened}
+
+Classical public-key cryptography (RSA, ECDH) relies on computational problems
+that are hard for classical computers but \emph{polynomial} for quantum computers
+running Shor's algorithm:
+\begin{itemize}
+  \item RSA: integer factorization. Classical: sub-exponential. Shor: $O((\log N)^3)$.
+  \item ECDH: discrete logarithm on elliptic curves. Same vulnerability.
+\end{itemize}
+
+This means that a sufficiently powerful quantum computer could break
+all existing RSA and ECC keys. The threat is already present via
+``harvest now, decrypt later'' attacks: adversaries are storing encrypted
+traffic today to decrypt it once quantum computers arrive.
+
+\subsection{Lattice-Based Cryptography and ML-KEM}
+
+Kyber768 (officially \emph{ML-KEM} under NIST FIPS 203) is a \emph{Key
+Encapsulation Mechanism} based on the hardness of the
+\textbf{Module Learning With Errors (M-LWE)} problem.
+
+\subsubsection{The Learning With Errors Problem}
+
+LWE: given many pairs $(\mathbf{a}_i, b_i = \langle \mathbf{a}_i, \mathbf{s} \rangle + e_i)$
+where $\mathbf{a}_i \in \mathbb{Z}_q^n$ is random, $\mathbf{s} \in \mathbb{Z}_q^n$ is a secret,
+and $e_i$ is small noise, find $\mathbf{s}$.
+
+\textbf{Why it's hard:} The noise corrupts the linear system. Without noise,
+you'd just solve $n$ equations for $\mathbf{s}$. With noise, the best
+known algorithms (lattice reduction: BKZ, LLL) take exponential time
+in the lattice dimension. No quantum speedup beyond a quadratic Grover speedup
+is known.
+
+\begin{mathbox}{LWE in One Line}
+\[
+b_i = \underbrace{\langle \mathbf{a}_i, \mathbf{s} \rangle}_{\text{linear}} + e_i \pmod{q}
+\]
+Finding $\mathbf{s}$ from $\{(\mathbf{a}_i, b_i)\}$ is the LWE problem.
+Changing $q$, $n$, or the noise distribution $\chi$ adjusts security level.
+\end{mathbox}
+
+\subsubsection{Module LWE and Kyber768 Parameters}
+
+Kyber768 uses a \emph{module} structure: instead of vectors over $\mathbb{Z}_q$,
+it uses polynomials in $\mathbb{Z}_q[x]/(x^{256}+1)$.
+This gives better key sizes while maintaining LWE hardness.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}llr@{}}
+\toprule
+Parameter & Value & Notes \\
+\midrule
+Module rank $k$ & 3 & (Kyber512: 2, Kyber1024: 4) \\
+Polynomial degree $n$ & 256 & ring $\mathbb{Z}_q[x]/(x^{256}+1)$ \\
+Modulus $q$ & 3329 & prime \\
+Noise parameter $\eta$ & 2 & centered binomial distribution \\
+Public key size & 1184 bytes & \\
+Secret key size & 2400 bytes & \\
+Ciphertext size & 1088 bytes & \\
+Shared secret size & 32 bytes & \\
+Classical security & $\geq 161$ bits & \\
+Quantum security & $\geq 153$ qubits & \\
+\bottomrule
+\end{tabular}
+\caption{Kyber768 parameters (NIST FIPS 203 Level 3).}
+\end{table}
+
+\subsection{How TAARA Uses Kyber768}
+
+When TaaraWare is deployed to a customer server, the TAARA Command Center runs:
+
+\begin{codebox}{Key Generation (taaraware\_manager.py:587--607)}
+\begin{lstlisting}[language=Python]
+import oqs  # liboqs-python: NIST-certified implementation
+kem = oqs.KeyEncapsulation('Kyber768')
+public_key = kem.generate_keypair()  # generates (pk, sk) internally
+ciphertext, shared_secret = kem.encap_secret(public_key)
+# shared_secret is 32 bytes — exists only in RAM, never written to disk
+\end{lstlisting}
+\end{codebox}
+
+\begin{enumerate}
+  \item Command Center generates a Kyber768 key pair $(pk, sk)$.
+  \item \textbf{Encapsulation:} $(\text{ciphertext}, K) \leftarrow \text{Encaps}(pk)$.
+        The 32-byte shared secret $K$ never leaves Command Center RAM.
+  \item The \textbf{ciphertext} is sent to the deployed TaaraWare agent
+        (or stored for future use). The \textbf{public key} and fingerprint
+        are stored in \texttt{models/client\_keys.json}.
+  \item For decapsulation (if agent had the private key):
+        $K \leftarrow \text{Decaps}(sk, \text{ciphertext})$.
+        Both sides now share $K$ without it ever being transmitted.
+\end{enumerate}
+
+\textbf{Current use in TAARA:} The shared secret $K$ is used as a seed
+for the per-client feature transform (§9). Even if an attacker knows
+the exact TAARA algorithm, they cannot compute what ``normal'' looks like
+for a specific client without $K$.
+
+% ============================================================
+\section{MITRE ATT\&CK and Parameter Mapping}
+% ============================================================
+
+\subsection{What MITRE ATT\&CK Is}
+
+MITRE ATT\&CK is a structured knowledge base of adversary tactics,
+techniques, and procedures (TTPs) observed in real attacks.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+Level & Example & Description \\
+\midrule
+Tactic & TA0006: Credential Access & The goal (what the attacker wants) \\
+Technique & T1110: Brute Force & The method (how they achieve the goal) \\
+Sub-technique & T1110.001: Password Guessing & Specific variant \\
+Procedure & Hydra SSH brute-force & Specific tool / implementation \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{TAARA's MITRE Mapping}
+
+From \texttt{taara\_analysis.py}, TAARA maps each detected finding to
+its ATT\&CK entry automatically:
+
+\begin{table}[H]
+\centering
+\footnotesize
+\begin{tabular}{@{}p{4cm}lp{4.5cm}p{3cm}@{}}
+\toprule
+Configuration Issue & Tactic & Technique & Real-World Impact \\
+\midrule
+\texttt{PasswordAuthentication yes} & TA0006 Cred. Access & T1110 Brute Force & Unlimited password guessing \\
+\texttt{PermitRootLogin yes} & TA0003 Persistence & T1078 Valid Accounts & Any login = full root = game over \\
+Firewall disabled (ufw/iptables) & TA0005 Def. Evasion & T1562.004 Firewall Off & Entire internet can reach all ports \\
+Audit/log missing & TA0005 Def. Evasion & T1562.002 Logs off & Attack is invisible, unrecoverable \\
+\texttt{X11Forwarding yes} & TA0008 Lateral Mov. & T1021.004 SSH & GUI forwarding opens MITM path \\
+Open port exposure & TA0043 Recon & T1046 Net. Discovery & Each port is an additional attack surface \\
+Empty password & TA0006 Cred. Access & T1110.001 Pwd Guess & Guessed instantly, zero brute-force needed \\
+\bottomrule
+\end{tabular}
+\caption{TAARA's ATT\&CK mappings for SSH and firewall findings.}
+\end{table}
+
+\textbf{Why this matters:} A finding like ``\texttt{PasswordAuthentication yes}''
+by itself is just a configuration note. Mapping it to \textbf{T1110 + TA0006}
+tells the security team: this enables Credential Access via Brute Force,
+which is a tactic used in 73\% of all server breaches. The path from
+misconfiguration to real-world attack is explicit.
+
+% ============================================================
+\section{GraphRAG: From Flat RAG to Knowledge Graphs}
+% ============================================================
+
+\subsection{The Problem with Flat RAG}
+
+Standard RAG (Retrieval-Augmented Generation) works like this:
+\begin{enumerate}
+  \item Build an index of document chunks (embed each chunk as a vector).
+  \item At query time: embed the query, find nearest chunks by cosine similarity.
+  \item Feed retrieved chunks as context to the LLM.
+\end{enumerate}
+
+\textbf{Limitation:} Flat RAG retrieves by \emph{similarity}, not by
+\emph{causality}. If your SSH config says \texttt{PermitRootLogin yes},
+a flat RAG might retrieve the OWASP paragraph about ``use strong passwords.''
+But what you really need to know is: this specific misconfiguration
+\emph{enables} an exploit chain that \emph{leads to} full server compromise.
+Flat RAG has no concept of ``leads to.''
+
+\subsection{GraphRAG: Adding Causal Structure}
+
+TAARA's knowledge graph is a directed graph $G = (V, E)$ where:
+\begin{itemize}
+  \item $V$ = security concepts (misconfigurations, attack techniques,
+        consequences, mitigations)
+  \item $E$ = typed edges: \texttt{enables}, \texttt{leads\_to},
+        \texttt{mitigated\_by}, \texttt{exploits}
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  every node/.style={font=\small},
+  misconfig/.style={draw=taaraRed, fill=taaraRed!15, rounded corners, minimum width=3cm,
+                    minimum height=0.6cm},
+  attack/.style={draw=taaraYellow!80!black, fill=taaraYellow!20, rounded corners,
+                 minimum width=3cm, minimum height=0.6cm},
+  consequence/.style={draw=taaraRed!80, fill=taaraRed!30, rounded corners,
+                      minimum width=3cm, minimum height=0.6cm},
+  mitigation/.style={draw=taaraGreen!60!black, fill=taaraGreen!15, rounded corners,
+                     minimum width=3cm, minimum height=0.6cm},
+  edge label/.style={font=\tiny\itshape\color{taaraBlue}}
+]
+  \node[misconfig] (pw) at (0,0) {PasswordAuth yes};
+  \node[attack] (bf) at (4,-1) {T1110 Brute Force};
+  \node[attack] (va) at (4,1) {T1078 Valid Accounts};
+  \node[consequence] (cc) at (8,0) {Full Server Compromise};
+  \node[mitigation] (fix) at (0,-2) {Set PasswordAuth no};
+
+  \draw[->, >=Stealth, taaraRed, thick] (pw) -- node[edge label, above]{enables} (bf);
+  \draw[->, >=Stealth, taaraRed, thick] (pw) -- node[edge label, below]{enables} (va);
+  \draw[->, >=Stealth, taaraRed, thick] (bf) -- node[edge label, above]{leads\_to} (cc);
+  \draw[->, >=Stealth, taaraRed, thick] (va) -- node[edge label, below]{leads\_to} (cc);
+  \draw[->, >=Stealth, taaraGreen!60!black, thick] (pw) -- node[edge label, right]{mitigated\_by} (fix);
+\end{tikzpicture}
+\caption{Knowledge graph fragment. A single misconfiguration enables two
+attack paths, both leading to the same consequence. Flat RAG cannot
+represent this causal structure.}
+\end{figure}
+
+\subsection{The Full TAARA GraphRAG Pipeline}
+
+For the \emph{behavioral} scanner (platform scan / OHA):
+\begin{enumerate}
+  \item \textbf{Pattern scan:} Regex rules match known misconfigs in the config text.
+  \item \textbf{Semantic search (FAISS):} Embed the config text using
+        \texttt{all-MiniLM-L6-v2} (384-dim sentence vectors).
+        FAISS approximate nearest neighbor search finds the 8 most similar
+        policy chunks from 2,444 indexed chunks.
+  \item \textbf{Quantum fidelity:} For each matched chunk,
+        compute $F(\text{config embedding}, \text{policy embedding})$.
+        Chunks with $F < 0.5$ are \emph{genuinely} in an unsafe direction.
+  \item \textbf{Graph traversal:} For each matched node in the graph,
+        traverse outgoing \texttt{enables}/\texttt{leads\_to} edges
+        (up to depth 3) to build the propagation chain.
+  \item \textbf{Mitigation lookup:} Follow \texttt{mitigated\_by} edges
+        to retrieve fix descriptions.
+\end{enumerate}
+
+For the \emph{dependency} scanner (repo/code scan):
+\begin{enumerate}
+  \item \textbf{OSV query:} Get real CVE data for each dependency version.
+  \item \textbf{FAISS retrieval:} Embed each CVE description,
+        retrieve top-3 matching policy chunks.
+  \item \textbf{LLM synthesis (Groq LLaMA-3.3-70B):}
+        Build prompt from: CVE list + exploit chains + policy context.
+        LLM generates a 3–4 sentence dependency risk analysis.
+  \item \textbf{Quantum fidelity on the answer:}
+        Embed the LLM's answer. Compare against the mean embedding
+        of retrieved policy chunks.
+        $F(\text{answer vec}, \text{policy mean vec})$ tells us:
+        does the LLM's answer point in the same direction as established policy?
+        $F > 0.6$: well-aligned. $F < 0.35$: review the answer.
+\end{enumerate}
+
+\begin{mathbox}{Why Fidelity on the LLM Answer?}
+The LLM can hallucinate or drift from the security policy context
+even when given correct facts. Instead of doing keyword matching
+(``did the LLM mention NIST?''), TAARA embeds the answer and
+computes how ``close'' it is to the policy space geometrically.
+This is a principled, model-agnostic way to verify that the
+LLM's guidance is aligned with the knowledge base — without a human reviewer.
+\end{mathbox}
+
+\subsection{FAISS: How Approximate Nearest Neighbor Works}
+
+FAISS (Facebook AI Similarity Search) stores 2,444 policy vectors,
+each in $\mathbb{R}^{384}$. Index type: Flat (exact L2 / inner product).
+
+Given query vector $\mathbf{q} \in \mathbb{R}^{384}$, FAISS returns:
+\[
+\text{top-}k = \underset{i}{\arg\text{sort}} \left(-\mathbf{q}^\top \mathbf{p}_i\right)
+\quad \text{(inner product = cosine similarity for normalized vectors)}
+\]
+
+With the \texttt{Flat} index and 2,444 vectors, this is brute-force
+$O(384 \times 2444)$ floating point operations per query — about $10^6$ FLOPs,
+fast on any CPU.
+
+% ============================================================
+\section{The Three Hidden Parameters: Why They Are Undetectable}
+% ============================================================
+
+\subsection{The Design Principle}
+
+An attacker who reads the TAARA source code knows which 13 features
+(indices 0–12) are collected. The attacker could craft behavior that
+produces ``normal'' values for all 13 visible features while performing
+a malicious action. This is the \emph{evasion problem}.
+
+TAARA's response: add three additional features that measure
+\emph{meta-properties of behavior history} — things that require
+knowledge of the prior history that only the TAARA system has.
+
+From \texttt{taaraware\_manager.py:252–373}:
+
+\subsection{Feature 13: Temporal Rhythm Deviation}
+
+\textbf{What it measures:} Whether the current hour-of-day has historically
+been quiet on this server.
+
+\textbf{Algorithm:}
+\begin{enumerate}
+  \item Load the last 100 feature buffer entries.
+  \item Build a histogram: $H[h] = \text{count of entries with timestamp in hour } h$.
+  \item Current hour fraction: $p_h = H[\text{current hour}] / 100$.
+  \item Signal: $\texttt{temporal\_rhythm\_deviation} = 1.0$ if $p_h < 0.05$, else $0.0$.
+\end{enumerate}
+
+\textbf{Why it's hard to evade:}
+The server's natural rhythm accumulates over months. If the server is
+always quiet between 2–5am (because it's a production database used during
+business hours), an attacker who stages an attack at 3am triggers a flag.
+The attacker cannot know the server's exact hourly distribution without
+having monitored it for months themselves. And if they \emph{have} been
+monitoring it for months, they've been inside the network long enough that
+other TAARA signals would have caught them.
+
+\subsection{Feature 14: Causal Chain Novelty}
+
+\textbf{What it measures:} Whether any parent→child process pair is new
+relative to the last 50 observation windows.
+
+\textbf{Algorithm:}
+\begin{enumerate}
+  \item Run \texttt{ps -eo ppid,pid,comm} to get all running processes.
+  \item Hash each (parent\_comm, child\_comm) pair:
+        $h = \text{MD5}(\texttt{ppid:comm})$.
+  \item Collect all hashes seen in the last 50 buffer entries.
+  \item $\texttt{causal\_chain\_novelty} = \frac{|\text{new pairs}|}{|\text{current pairs}|}$.
+\end{enumerate}
+
+\textbf{Why it's hard to evade:}
+Every attack tool (a privilege escalation exploit, a reverse shell,
+a cryptominer) has a characteristic process lineage. If \texttt{sshd}
+spawns \texttt{bash} spawns \texttt{wget} — that's normal. If \texttt{sshd}
+spawns \texttt{bash} spawns \texttt{nmap} — that's a new pair. The full
+hash of (parent, child) combinations creates a unique fingerprint of
+``what processes beget what.'' This is particularly effective against
+living-off-the-land attacks that use legitimate OS tools: even if the
+attacker uses \texttt{curl} (a legit tool), the parent→child chain
+\texttt{sshd→bash→curl} may never have occurred on this server before.
+
+\subsection{Feature 15: Concealment Signal}
+
+This is a composite of three sub-signals that each detect different
+forms of evidence destruction:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}p{3.5cm}p{5.5cm}p{4cm}@{}}
+\toprule
+Sub-signal & Trigger & Attack this catches \\
+\midrule
+Auth log stagnation & auth.log file size didn't grow during business hours & Attacker deleting/truncating auth logs \\
+Bash history shrinkage & \texttt{\~{}/.bash\_history} line count decreased & Attacker running \texttt{history -c} \\
+Cron silence & Scheduled jobs existed but cron log not updated in 10 min & Ransomware disabling scheduled security jobs \\
+\bottomrule
+\end{tabular}
+\caption{The three concealment sub-signals that compose Feature 15.}
+\end{table}
+
+$\texttt{concealment\_signal} = \frac{s_1 + s_2 + s_3}{3}$
+
+\textbf{Why it's brilliant and why it's undetectable:}
+An attacker covering their tracks will fire at least one of these.
+If they delete auth logs ($s_1 = 1.0$) but leave bash history unchanged ($s_2 = 0.0$)
+and don't touch cron ($s_3 = 0.0$), the signal is $1/3 = 0.33$ — a moderate anomaly.
+If they do all three, signal = 1.0.
+
+The reason this is hard to evade: to avoid triggering $s_1$, the attacker
+must \emph{write fake auth log entries} to keep the file growing while they work.
+But writing fake log entries creates a distinctive pattern in the log content
+that would be caught by the policy deviation scanner (§8). To avoid $s_2$,
+they must leave their commands in bash history — which exposes their tooling.
+To avoid $s_3$, they must let cron jobs run — which may trigger other detection.
+Each evasion creates a new detectable signal.
+
+\subsection{The Kyber-Keyed Transform: Making Hidden Features Truly Unguessable}
+
+Even if an attacker reads the source code and knows all three hidden features,
+they still cannot compute ``normal'' for a specific client. The function
+\texttt{apply\_client\_transform()} applies a per-client offset before
+quantum encoding:
+
+\begin{mathbox}{Client Transform: Lattice-Hard Evasion Barrier}
+\[
+\mathbf{v}_{\text{keyed}} = \frac{\mathbf{v} + \boldsymbol{\delta}_K}
+  {\norm{\mathbf{v} + \boldsymbol{\delta}_K}}
+\]
+where $\boldsymbol{\delta}_K \in \mathbb{R}^n$ is derived from the Kyber768
+shared secret $K$ via SHAKE-256 (SHA3-256 iterated):
+\[
+\boldsymbol{\delta}_K[i] = \frac{\text{SHAKE256}(K \| \text{hostname} \| i)}{2^{64}} - 0.5
+\]
+\end{mathbox}
+
+Since $K$ is a Kyber768 shared secret, computing $\boldsymbol{\delta}_K$
+requires solving Module LWE — which requires exponential time classically
+and is believed to be quantum-resistant.
+
+\textbf{Effect:} Two clients running identical workloads on identical hardware
+have different ``normal'' fidelity values because $\boldsymbol{\delta}_K$
+is different for each. An attacker who extracts the algorithm from one
+client cannot use it to predict fidelity values for another client.
+
+% ============================================================
+\section{Measurement, PDF Generation, and the Complete Pipeline}
+% ============================================================
+
+\subsection{What TAARA Measures and How}
+
+\subsubsection{Organizational Health Analysis (OHA) — Pillar A}
+
+The OHA scan connects to the target via SSH (or cloud API) and collects:
+
+\begin{enumerate}
+  \item \textbf{sshd\_config} — parsed for all misconfigurations.
+  \item \textbf{Firewall state} — \texttt{ufw status}, \texttt{iptables -L}.
+  \item \textbf{Open ports} — \texttt{ss -tulnp}.
+  \item \textbf{Auth log features} — failed/accepted logins, unique IPs.
+  \item \textbf{User accounts} — UID 0 accounts, empty passwords.
+\end{enumerate}
+
+Each finding is classified by severity:
+\[
+\text{Security Risk Score} = \min\left(25 \cdot n_{\text{critical}} + 15 \cdot n_{\text{high}} + 5 \cdot n_{\text{medium}} + n_{\text{low}},\; 100\right)
+\]
+
+\subsubsection{Infrastructure Health Score}
+
+The final score combining all three pillars:
+\[
+\text{IHS} = \max\left(0,\; 100 - \lfloor 0.40 \cdot S_{\text{attack}} + 0.20 \cdot N_{\text{novelty}} + 0.25 \cdot R_{\text{repo}} + 0.15 \cdot C_{\text{cost}} \rfloor\right)
+\]
+
+where:
+\begin{itemize}
+  \item $S_{\text{attack}}$: Security Risk Score from Pillar A
+  \item $N_{\text{novelty}}$: Behavior Novelty Score (= $100 \times (1 - F_{\min})$)
+  \item $R_{\text{repo}}$: Repository risk score from Pillar B
+  \item $C_{\text{cost}}$: Cloud waste score (savings / 500 × 15, capped at 15)
+\end{itemize}
+
+\subsubsection{Repository Risk (Pillar B) — The 11-Feature Posture Vector}
+
+For code scanning, TAARA builds a posture vector $\mathbf{p} \in \mathbb{R}^{11}$,
+normalized to unit length:
+
+\begin{align*}
+p_0 &= \min(n_{\text{direct}} / 100,\; 1.0) & &\text{direct dependencies} \\
+p_1 &= \min(n_{\text{transitive}} / 1000,\; 1.0) & &\text{transitive deps} \\
+p_2 &= \min(n_{\text{critical}} / 50,\; 1.0) & &\text{critical CVEs} \\
+p_3 &= \min(n_{\text{high}} / 100,\; 1.0) & &\text{high CVEs} \\
+p_4 &= \min(n_{\text{medium}} / 200,\; 1.0) & &\text{medium CVEs} \\
+p_5 &= \min(n_{\text{low}} / 200,\; 1.0) & &\text{low CVEs} \\
+p_6 &= n_{\text{affected}} / n_{\text{total}} & &\text{fraction with CVEs} \\
+p_7 &= \min(\bar{d} / 5,\; 1.0) & &\text{mean dependency depth} \\
+p_8 &= \min(\rho \cdot 100,\; 1.0) & &\text{graph density} \\
+p_9 &= \min(\text{chain\_score} / 10,\; 1.0) & &\text{max exploit chain} \\
+p_{10} &= 0 & &\text{EOL package count (reserved)}
+\end{align*}
+
+Quantum fidelity $F(\mathbf{p}, \mathbf{p}_{\text{policy}})$ tells TAARA how
+close the repo's posture is to the ``secure baseline'' captured by the
+nearest policy embedding.
+
+\subsubsection{Exploit Chain Scoring}
+
+For each vulnerable package, TAARA scores the exploitability as:
+\[
+\text{chain\_score} = s_{\text{severity}} \times \frac{1}{d}
+\]
+where $s \in \{10.0, 7.5, 5.0, 2.5\}$ for \{critical, high, medium, low\}
+and $d$ is the dependency depth (1 = direct, 2 = transitive, etc.).
+
+\textbf{Intuition:} A critical CVE in a direct dependency (depth=1) scores
+$10.0 \times 1.0 = 10.0$ (maximum urgency). The same CVE in a 4th-level
+transitive dependency scores $10.0 \times 0.25 = 2.5$ — still critical,
+but harder to reach.
+
+\begin{examplebox}{NodeGoat Scan Results (Real Benchmark Data)}
+NodeGoat (OWASP vulnerable Node.js app) scanned with TAARA:
+\begin{itemize}
+  \item Packages resolved: $\approx 800$ (from \texttt{package-lock.json})
+  \item CVEs found: 165 findings, 46 critical, 63 high
+  \item Repo quantum fidelity $F = 0.4277 < 0.5$: \textbf{UNSAFE}
+  \item Packages flagged include: \texttt{growl 1.9.2} (GHSA-7g98-r9q6-p2wx),
+        \texttt{set-value 0.4.3}, \texttt{handlebars 4.0.6}
+  \item GraphRAG LLM analysis (Groq LLaMA-3.3-70B): identified these specific
+        packages as the highest-risk attack paths, with npm upgrade commands
+\end{itemize}
+\end{examplebox}
+
+\subsection{TaaraWords PDF Report Generation}
+
+The PDF is generated by ReportLab, a pure-Python PDF library. The pipeline:
+
+\begin{enumerate}
+  \item \textbf{Data extraction:} Read directly from \texttt{repo\_results}
+        (OSV CVEs, exploit chains, quantum fidelity, cross-file chains).
+  \item \textbf{Groq-generated summary:} Call LLaMA-3.3-70B with the real
+        CVE findings as context. Strictly prompt-engineered: ``Use only
+        the findings provided below. Do not invent vulnerabilities.''
+        The LLM converts findings to business-readable language.
+  \item \textbf{Quantum fidelity on the summary:} Embed the generated summary,
+        compare to policy space. The PDF includes the fidelity score for the
+        executive summary itself — a self-auditing report.
+  \item \textbf{PDF assembly:} Cover page (risk score + F score), executive
+        summary, findings table (top 20 critical, top 15 high), action plan
+        (WEEK 1 / MONTH 1 / QUARTER), TaaraWare pitch, data sources.
+\end{enumerate}
+
+\textbf{Why HTML escaping matters:} CVE descriptions contain characters like
+\texttt{<}, \texttt{>}, \texttt{\&} (e.g., ``XSS via \texttt{<script>}'').
+ReportLab uses an XML-like markup language (\texttt{Paragraph}).
+Without \texttt{html.escape()}, one CVE description containing ``\texttt{<}''
+breaks the entire PDF render with
+``\texttt{paraparser: syntax error: parse ended with 1 unclosed tags}''.
+
+\subsection{The Complete System Flow}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  scale=0.85,
+  every node/.style={font=\footnotesize},
+  box/.style={draw, rounded corners, minimum width=3cm, minimum height=0.7cm,
+               fill=taaraBlue!10, draw=taaraBlue},
+  arrow/.style={->, >=Stealth, thick, taaraBlue}
+]
+  % Input
+  \node[box] (ssh) at (0,0) {SSH Server};
+  \node[box] (repo) at (0,-1.5) {Git Repo};
+  \node[box] (cloud) at (0,-3.0) {Cloud (AWS/GCP)};
+
+  % Collectors
+  \node[box, fill=taaraYellow!20] (plat) at (4,0) {Platform Scan};
+  \node[box, fill=taaraYellow!20] (scanr) at (4,-1.5) {Repo Scanner};
+  \node[box, fill=taaraYellow!20] (cost) at (4,-3.0) {Cost Analyzer};
+
+  % Analysis
+  \node[box, fill=taaraRed!15, draw=taaraRed] (ae) at (8,0) {Autoencoder\\+ Memory};
+  \node[box, fill=taaraRed!15, draw=taaraRed] (qe) at (8,-1.0) {Quantum Circuit\\$F_{\min}(t)$};
+  \node[box, fill=taaraRed!15, draw=taaraRed] (kb) at (8,-2.0) {FAISS + GraphRAG\\+ LLM};
+  \node[box, fill=taaraRed!15, draw=taaraRed] (dep) at (8,-3.0) {Dep. Graph\\+ OSV};
+
+  % Scores
+  \node[box, fill=taaraGreen!15, draw=taaraGreen!60!black] (ihs) at (12,-1.5)
+    {IHS Score\\+ PDF Report};
+
+  % Arrows
+  \draw[arrow] (ssh) -- (plat);
+  \draw[arrow] (repo) -- (scanr);
+  \draw[arrow] (cloud) -- (cost);
+  \draw[arrow] (plat) -- (ae);
+  \draw[arrow] (plat) -- (kb);
+  \draw[arrow] (scanr) -- (dep);
+  \draw[arrow] (scanr) -- (kb);
+  \draw[arrow] (ae) -- (qe);
+  \draw[arrow] (qe) -- (ihs);
+  \draw[arrow] (kb) -- (ihs);
+  \draw[arrow] (dep) -- (ihs);
+  \draw[arrow] (cost) -- (ihs);
+\end{tikzpicture}
+\caption{Complete TAARA Q.0 data flow from infrastructure to IHS score and PDF.}
+\end{figure}
+
+% ============================================================
+\section*{Appendix A: Key Code References}
+% ============================================================
+\addcontentsline{toc}{section}{Appendix A: Key Code References}
+
+\begin{table}[H]
+\centering
+\footnotesize
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+File & Lines & What is here \\
+\midrule
+\texttt{components/taara\_core.py} & 59--83 & Least-squares projection (Equations 3–5) \\
+\texttt{components/taara\_core.py} & 85--129 & Threshold-free novelty criterion (Eq. 6) \\
+\texttt{components/quantum\_engine.py} & 65--93 & 4-qubit PennyLane circuit \\
+\texttt{components/quantum\_engine.py} & 135--144 & Fidelity computation $F = |\braket{\psi_t}{\psi_m}|^2$ \\
+\texttt{components/quantum\_engine.py} & 353--385 & Kyber-keyed client transform \\
+\texttt{components/dna\_autoencoder.py} & 31--67 & Autoencoder architecture \\
+\texttt{components/dna\_autoencoder.py} & 86--173 & Training loop with early stopping \\
+\texttt{components/taaraware\_manager.py} & 252--374 & Three hidden features \\
+\texttt{components/taaraware\_manager.py} & 586--618 & Kyber768 key generation + deployment \\
+\texttt{research/query\_knowledge\_base.py} & 46--69 & Fidelity circuit for GraphRAG \\
+\texttt{research/query\_knowledge\_base.py} & 134--371 & TAARAScan: full GraphRAG pipeline \\
+\texttt{research/scan\_repo.py} & 451--590 & Dependency graph + exploit chains \\
+\texttt{research/scan\_repo.py} & 1294--1450 & GraphRAG + LLM + quantum in repo scanner \\
+\texttt{components/taara\_analysis.py} & 25--52 & MITRE ATT\&CK mapping table \\
+\bottomrule
+\end{tabular}
+\caption{Where to find each technical component in the codebase.}
+\end{table}
+
+% ============================================================
+\section*{Appendix B: Glossary}
+% ============================================================
+\addcontentsline{toc}{section}{Appendix B: Glossary}
+
+\begin{description}
+  \item[Amplitude encoding] Encoding a classical vector $\mathbf{v}$ into
+    a quantum state by using its normalized components as probability amplitudes.
+  \item[CVSS] Common Vulnerability Scoring System. Scores CVEs from 0–10.
+    TAARA maps: ${\geq}9.0\to$critical, ${\geq}7.0\to$high, ${\geq}4.0\to$medium.
+  \item[FAISS] Facebook AI Similarity Search. Indexes high-dimensional vectors for
+    fast approximate nearest-neighbor retrieval.
+  \item[Fidelity] $F(\ket{\psi_a}, \ket{\psi_b}) = |\braket{\psi_a}{\psi_b}|^2$.
+    1.0 = identical, 0.0 = orthogonal. TAARA uses 0.5 as the safe/unsafe threshold.
+  \item[GraphRAG] RAG with a knowledge graph providing causal, not just semantic, context.
+  \item[Kyber768 / ML-KEM] NIST FIPS 203 Level 3 post-quantum key encapsulation.
+    Quantum-resistant; security based on Module LWE hardness.
+  \item[Memory basis] $\mathcal{M}_u$: the set of prior behavioral state vectors
+    for identity $u$. Used for reconstruction in §3.
+  \item[M-LWE] Module Learning With Errors. The mathematical problem underlying
+    Kyber768. Believed hard for both classical and quantum computers.
+  \item[OSV.dev] Open Source Vulnerabilities database. TAARA queries it for real CVEs.
+  \item[Posture vector] The 11-feature normalized vector summarizing a repo's
+    dependency security posture, used for repo-level quantum fidelity scoring.
+  \item[Reconstruction residual] $\boldsymbol{\Delta}_t = \mathbf{x}_t - \hat{\mathbf{x}}_t$.
+    The component of current behavior not representable by prior observations.
+  \item[TaaraWare] Always-on collector agent deployed to customer infrastructure.
+    Collects behavioral features and sends to Command Center.
+\end{description}
+
+\end{document}

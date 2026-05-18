@@ -34,5 +34,204 @@
     "result": "",
     "severity": "error",
     "details": {}
+  },
+  {
+    "timestamp": 1778971203.9667447,
+    "datetime": "2026-05-17T04:10:03.966747",
+    "action_type": "autonomous_start",
+    "description": "Starting autonomous security analysis",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1778971203.9686034,
+    "datetime": "2026-05-17T04:10:03.968605",
+    "action_type": "scan_start",
+    "description": "Starting security scan on ssh",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1778971244.0268037,
+    "datetime": "2026-05-17T04:10:44.026808",
+    "action_type": "scan_complete",
+    "description": "Security scan complete: 28 findings, 0 critical",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1778971244.0295885,
+    "datetime": "2026-05-17T04:10:44.029591",
+    "action_type": "normal",
+    "description": "System behavior within known patterns",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1778971246.3649275,
+    "datetime": "2026-05-17T04:10:46.364927",
+    "action_type": "remediation_generated",
+    "description": "Generated 4 remediation commands",
+    "result": "",
+    "severity": "info",
+    "details": {
+      "command_count": 4
+    }
+  },
+  {
+    "timestamp": 1778971998.665503,
+    "datetime": "2026-05-17T04:23:18.665504",
+    "action_type": "autonomous_start",
+    "description": "Starting autonomous security analysis",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1778971998.6660552,
+    "datetime": "2026-05-17T04:23:18.666055",
+    "action_type": "scan_start",
+    "description": "Starting security scan on ssh",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1778972037.2274897,
+    "datetime": "2026-05-17T04:23:57.227491",
+    "action_type": "scan_complete",
+    "description": "Security scan complete: 28 findings, 0 critical",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1778972037.2283287,
+    "datetime": "2026-05-17T04:23:57.228330",
+    "action_type": "normal",
+    "description": "System behavior within known patterns",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1778972039.1823685,
+    "datetime": "2026-05-17T04:23:59.182369",
+    "action_type": "remediation_generated",
+    "description": "Generated 13 remediation commands",
+    "result": "",
+    "severity": "info",
+    "details": {
+      "command_count": 13
+    }
+  },
+  {
+    "timestamp": 1779009852.5607095,
+    "datetime": "2026-05-17T14:54:12.560711",
+    "action_type": "autonomous_start",
+    "description": "Starting autonomous security analysis",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1779009852.561304,
+    "datetime": "2026-05-17T14:54:12.561305",
+    "action_type": "scan_start",
+    "description": "Starting security scan on ssh",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1779009889.1425288,
+    "datetime": "2026-05-17T14:54:49.142535",
+    "action_type": "scan_complete",
+    "description": "Security scan complete: 28 findings, 0 critical",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1779009889.1444488,
+    "datetime": "2026-05-17T14:54:49.144451",
+    "action_type": "normal",
+    "description": "System behavior within known patterns",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1779009891.267488,
+    "datetime": "2026-05-17T14:54:51.267489",
+    "action_type": "remediation_generated",
+    "description": "Generated 4 remediation commands",
+    "result": "",
+    "severity": "info",
+    "details": {
+      "command_count": 4
+    }
+  },
+  {
+    "timestamp": 1779032972.238779,
+    "datetime": "2026-05-17T21:19:32.238781",
+    "action_type": "autonomous_start",
+    "description": "Starting quantum-informed autonomous analysis",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1779032972.2456558,
+    "datetime": "2026-05-17T21:19:32.245658",
+    "action_type": "scan_start",
+    "description": "Starting security scan on ssh",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1779033013.3264492,
+    "datetime": "2026-05-17T21:20:13.326454",
+    "action_type": "scan_complete",
+    "description": "Scan complete: 28 findings, 0 critical",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1779033013.3287406,
+    "datetime": "2026-05-17T21:20:13.328745",
+    "action_type": "normal",
+    "description": "Behavior within known patterns.",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1779033013.3338852,
+    "datetime": "2026-05-17T21:20:13.333888",
+    "action_type": "graphrag_skip",
+    "description": "GraphRAG unavailable: No module named 'knowledge_base.query_knowledge_base'",
+    "result": "",
+    "severity": "info",
+    "details": {}
+  },
+  {
+    "timestamp": 1779033015.271384,
+    "datetime": "2026-05-17T21:20:15.271384",
+    "action_type": "remediations_generated",
+    "description": "Generated 5 commands. Pre-approved: 0. Quantum bucket: normal.",
+    "result": "",
+    "severity": "info",
+    "details": {
+      "command_count": 5,
+      "f_min": 1.0,
+      "pre_approved_count": 0
+    }
   }
 ]

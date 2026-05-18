@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0a0a1a" />
+    <title>TAARA — Quantum Infrastructure Intelligence</title>
+    <style>
+      /* CSS variables set immediately so first React render is never blank */
+      :root {
+        --bg-app: #0a0a1a;
+        --bg-surface: #111122;
+        --bg-raised: #16162a;
+        --bg-input: #0d0d1f;
+        --border: #1a1a3e;
+        --border-dim: #141428;
+        --text: #e0e0f0;
+        --text-dim: #888899;
+        --text-faint: #444466;
+        --accent: #e94560;
+        --accent-glow: rgba(233,69,96,0.15);
+        --green: #22cc66;
+        --amber: #f5a623;
+        --red: #e94560;
+        --blue: #4a9eff;
+        --purple: #9b7dff;
+      }
+      /* Loading screen shown before React mounts */
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body, #root {
+        height: 100%;
+        background: #0a0a1a;
+        color: #e0e0e0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+      #boot-screen {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        gap: 24px;
+      }
+      #boot-screen .logo {
+        font-size: 52px;
+        font-weight: 700;
+        color: #e94560;
+        letter-spacing: 4px;
+      }
+      #boot-screen .tagline {
+        font-size: 14px;
+        color: #555577;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+      }
+      #boot-screen .status {
+        font-size: 12px;
+        color: #444466;
+        margin-top: 8px;
+      }
+      .pulse-bar {
+        width: 200px;
+        height: 2px;
+        background: #1a1a2e;
+        border-radius: 2px;
+        overflow: hidden;
+        position: relative;
+      }
+      .pulse-bar::after {
+        content: '';
+        position: absolute;
+        left: -60%;
+        width: 60%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, #e94560, transparent);
+        animation: pulse 1.4s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0% { left: -60%; }
+        100% { left: 110%; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boot-screen">
+      <div class="logo">TAARA</div>
+      <div class="tagline">Quantum Infrastructure Intelligence</div>
+      <div class="pulse-bar"></div>
+      <div class="status" id="boot-status">Starting reasoning engine...</div>
+    </div>
+    <div id="root"></div>
+    <script>
+      // Update boot status message while server starts
+      const msgs = [
+        'Starting reasoning engine...',
+        'Initialising quantum validator...',
+        'Loading knowledge base...',
+        'Connecting to TAARA core...',
+      ];
+      let i = 0;
+      const el = document.getElementById('boot-status');
+      const interval = setInterval(() => {
+        i = (i + 1) % msgs.length;
+        if (el) el.textContent = msgs[i];
+      }, 1800);
+
+      // When React mounts it will hide #boot-screen
+      window.__clearBootInterval = () => clearInterval(interval);
+    </script>
+  </body>
+</html>

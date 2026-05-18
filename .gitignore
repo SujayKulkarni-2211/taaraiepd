@@ -61,3 +61,7 @@ benchmark/datasets/*.tar.gz
 
 # Runtime model state
 models/taaraware_state.json
+
+# Desktop app — exclude node_modules and build artifacts
+desktop/node_modules/
+desktop/build/

@@ -4,11 +4,23 @@ Quantum Validation Engine (PennyLane)
 
 Implements the quantum validation layer from the TAARA paper (Section 3.4).
 
-Architecture:
-    1. Amplitude encoding of residual direction vectors
-    2. 4-qubit circuit: AmplitudeEmbedding → Hadamard → Ring CNOT → RX/RY/RZ rotations
-    3. Quantum fidelity computation: F(|ψ_t⟩, |ψ_m⟩) = |⟨ψ_t|ψ_m⟩|²
-    4. Quantum-confirmed novelty: F_min(t) < 0.5
+Architecture — dual-encoding pipeline:
+    1. Amplitude encoding: encodes residual magnitude + direction as quantum amplitudes
+       → captures the "how far" dimension of behavioral drift
+    2. Angle encoding: encodes each feature as a rotation angle (Rx gate)
+       → entanglement layer after angle encoding creates interference between correlated
+          features, detecting non-linear relationships amplitude encoding treats independently
+    3. Fidelity computed from angle-encoded circuit (richer signal)
+       Amplitude circuit available for magnitude-only baseline
+    4. Quantum-confirmed novelty: F_min(t) < 0.5 (geometric midpoint of Hilbert space)
+
+Why angle encoding adds value over amplitude alone:
+    Amplitude encoding maps features to a superposition state — features interact only
+    through global normalization. Angle encoding maps feature_i → Rx(θ_i) on qubit_i,
+    then the ring-CNOT entanglement creates CX interference between adjacent features.
+    If features A and B both rotate when an attack is in progress (correlated change),
+    the entangled state diverges more strongly from baseline than either rotation alone.
+    Amplitude encoding cannot see this correlation; angle encoding can.
 
 Uses PennyLane default.qubit simulator (no real quantum hardware).
 Keeps circuits to 4 qubits for laptop GPU compatibility.
@@ -25,6 +37,7 @@ N_QUBITS = 4
 STATE_DIM = 2 ** N_QUBITS  # 16 dimensions
 
 dev = qml.device("default.qubit", wires=N_QUBITS)
+dev_angle = qml.device("default.qubit", wires=N_QUBITS)
 
 
 def _prepare_amplitude_vector(vector: np.ndarray) -> np.ndarray:
@@ -62,10 +75,38 @@ def _prepare_amplitude_vector(vector: np.ndarray) -> np.ndarray:
     return v
 
 
+def _prepare_angle_vector(vector: np.ndarray) -> np.ndarray:
+    """
+    Prepare a vector for angle encoding into N_QUBITS rotation angles.
+
+    Each feature is mapped to [0, π] via arctan normalization so that:
+    - Zero → π/2 (|+⟩ state, maximally uncertain)
+    - Large positive → π (|1⟩ direction)
+    - Large negative → 0 (|0⟩ direction)
+    This means deviations from normal (= 0) push qubits toward poles,
+    and the entanglement layer then captures correlated pole-pushes.
+    """
+    v = np.array(vector, dtype=np.float64).flatten()
+
+    # Take first N_QUBITS features (or pad with zeros)
+    if len(v) < N_QUBITS:
+        padded = np.zeros(N_QUBITS, dtype=np.float64)
+        padded[:len(v)] = v
+        v = padded
+    else:
+        # Downsample by averaging groups — preserves global deviation signal
+        chunk = len(v) // N_QUBITS
+        v = np.array([np.mean(v[i*chunk:(i+1)*chunk]) for i in range(N_QUBITS)])
+
+    # Map ℝ → [0, π] via scaled arctan
+    angles = np.pi / 2 + np.arctan(v)  # arctan ∈ (-π/2, π/2) → result ∈ (0, π)
+    return angles.astype(np.float64)
+
+
 @qml.qnode(dev)
 def _quantum_circuit(features: np.ndarray):
     """
-    TAARA quantum validation circuit (paper Section 3.4.2).
+    TAARA amplitude-encoding validation circuit (paper Section 3.4.2).
 
     Circuit design:
     1. Amplitude embedding - encodes residual direction into quantum state
@@ -74,7 +115,7 @@ def _quantum_circuit(features: np.ndarray):
     4. Parameterized rotations - RX, RY, RZ on each qubit (angles fixed at π/4)
     5. Return full statevector for fidelity computation
 
-    Circuit depth: 5 gates
+    Circuit depth: 5 gate layers
     """
     qml.AmplitudeEmbedding(features=features, wires=range(N_QUBITS), normalize=True)
 
@@ -93,6 +134,49 @@ def _quantum_circuit(features: np.ndarray):
     return qml.state()
 
 
+@qml.qnode(dev_angle)
+def _angle_encoding_circuit(angles: np.ndarray):
+    """
+    TAARA angle-encoding circuit for relational feature detection.
+
+    Circuit design:
+    1. AngleEmbedding(rotation='X') — Rx(θ_i) on each qubit_i
+       Each feature's deviation from zero becomes a rotation angle.
+       Normal behavior (all zeros) → all qubits at π/2 → uniform superposition.
+    2. Ring CNOT entanglement — creates CX correlations between adjacent qubits.
+       Correlated feature changes (f_i and f_{i+1} both deviating) produce
+       constructive/destructive interference not present without entanglement.
+    3. Second AngleEmbedding layer (rotation='Y') — encodes the same features
+       again as Y-rotations, giving the circuit depth to detect 2nd-order correlations.
+    4. Ring CNOT again — captures correlations after Y-rotation layer.
+    5. Return statevector.
+
+    Why this catches what amplitude encoding misses:
+    If proc_count and cpu_entropy both spike (correlated attack signal), the Rx-CNOT
+    layer produces a specific interference pattern distinct from either spiking alone.
+    Amplitude encoding would see a slightly larger ||Δ|| but miss the correlation geometry.
+    Angle encoding + entanglement sees the specific joint rotation — a fingerprint of
+    correlated multi-feature behavioral change.
+
+    Circuit depth: 4 gate layers | Qubits: 4 | Encodes: N_QUBITS features
+    """
+    # Layer 1: Angle encode as X-rotations
+    qml.AngleEmbedding(features=angles, wires=range(N_QUBITS), rotation='X')
+
+    # Entanglement: ring CNOT captures pairwise correlations after X-layer
+    for i in range(N_QUBITS):
+        qml.CNOT(wires=[i, (i + 1) % N_QUBITS])
+
+    # Layer 2: Angle encode again as Y-rotations (cross-basis, 2nd-order signal)
+    qml.AngleEmbedding(features=angles, wires=range(N_QUBITS), rotation='Y')
+
+    # Second entanglement: ring CNOT in reverse direction for full correlation coverage
+    for i in range(N_QUBITS - 1, -1, -1):
+        qml.CNOT(wires=[i, (i + 1) % N_QUBITS])
+
+    return qml.state()
+
+
 @qml.qnode(dev)
 def _quantum_circuit_bare(features: np.ndarray):
     """Bare amplitude encoding without processing - for pure fidelity computation."""
@@ -104,19 +188,22 @@ class QuantumValidator:
     """
     Quantum validation layer for TAARA novelty detection.
 
-    Implements Section 3.4 of the paper:
-    - Encodes residual direction vectors into quantum states
-    - Computes quantum fidelity between states
-    - Confirms if classical novelty detections represent genuine directional shifts
+    Implements Section 3.4 of the paper with dual-encoding:
+    - Amplitude encoding: captures magnitude + direction of residual
+    - Angle encoding: captures correlational relationships between features
+    - F_min computed from angle-encoded states (richer signal)
+    - Both are available for comparison and reporting
     """
 
     def __init__(self):
-        self.memory_states: List[np.ndarray] = []
+        self.memory_states: List[np.ndarray] = []          # amplitude-encoded
+        self.memory_angle_states: List[np.ndarray] = []    # angle-encoded
         self.memory_residuals: List[np.ndarray] = []
+        self.encoding_mode: str = "angle"  # "angle" | "amplitude" | "both"
 
     def encode_residual(self, residual: np.ndarray) -> np.ndarray:
         """
-        Encode a residual vector into a quantum state.
+        Encode a residual vector into a quantum state (amplitude encoding).
 
         From paper Eq. 7-8:
         Δ_hat = Δ / ||Δ||
@@ -124,6 +211,17 @@ class QuantumValidator:
         """
         amplitude_vec = _prepare_amplitude_vector(residual)
         state = _quantum_circuit(amplitude_vec)
+        return np.array(state, dtype=np.complex128)
+
+    def encode_residual_angle(self, residual: np.ndarray) -> np.ndarray:
+        """
+        Encode a residual vector using angle encoding for relational detection.
+
+        Maps each feature to a rotation angle — entanglement then captures
+        which features are changing together vs. independently.
+        """
+        angles = _prepare_angle_vector(residual)
+        state = _angle_encoding_circuit(angles)
         return np.array(state, dtype=np.complex128)
 
     def encode_residual_bare(self, residual: np.ndarray) -> np.ndarray:
@@ -145,37 +243,68 @@ class QuantumValidator:
 
     def compute_minimum_fidelity(self, current_residual: np.ndarray) -> Dict:
         """
-        Compute minimum fidelity against all memory states.
+        Compute minimum fidelity against all memory states using angle encoding.
 
-        From paper Section 3.4.3:
         F_min(t) = min_{m ∈ M_u} F(|ψ_t⟩, |ψ_m⟩)
 
-        Quantum-confirmed novelty if F_min < 0.5
+        Angle encoding used as primary: captures correlated multi-feature changes
+        that amplitude encoding treats independently. Amplitude F_min included as
+        a secondary signal for comparison and reporting.
+
+        Quantum-confirmed novelty: F_min < 0.5 (geometric midpoint, parameter-free)
         """
-        if not self.memory_states:
+        # First observation — no memory to compare against
+        if not self.memory_angle_states and not self.memory_states:
             return {
                 'f_min': 0.0,
                 'is_quantum_novel': True,
                 'fidelities': [],
-                'note': 'No memory states - first observation'
+                'fidelities_amplitude': [],
+                'note': 'No memory states - first observation',
+                'encoding': 'angle+amplitude',
             }
 
-        current_state = self.encode_residual(current_residual)
+        # Angle-encoded fidelities (primary signal)
+        angle_fidelities = []
+        if self.memory_angle_states:
+            current_angle_state = self.encode_residual_angle(current_residual)
+            for mem_state in self.memory_angle_states:
+                f = self.compute_fidelity(current_angle_state, mem_state)
+                angle_fidelities.append(f)
 
-        fidelities = []
-        for mem_state in self.memory_states:
-            f = self.compute_fidelity(current_state, mem_state)
-            fidelities.append(f)
+        # Amplitude-encoded fidelities (secondary / baseline)
+        amp_fidelities = []
+        if self.memory_states:
+            current_amp_state = self.encode_residual(current_residual)
+            for mem_state in self.memory_states:
+                f = self.compute_fidelity(current_amp_state, mem_state)
+                amp_fidelities.append(f)
 
-        f_min = min(fidelities)
+        # Primary F_min comes from angle encoding (if available)
+        if angle_fidelities:
+            f_min = min(angle_fidelities)
+            primary_fidelities = angle_fidelities
+        else:
+            f_min = min(amp_fidelities)
+            primary_fidelities = amp_fidelities
+
+        f_min_amp = min(amp_fidelities) if amp_fidelities else None
 
         return {
             'f_min': f_min,
             'is_quantum_novel': f_min < 0.5,
-            'fidelities': fidelities,
-            'mean_fidelity': float(np.mean(fidelities)),
-            'max_fidelity': float(max(fidelities)),
-            'quantum_confidence': 1.0 - f_min
+            'fidelities': primary_fidelities,
+            'fidelities_amplitude': amp_fidelities,
+            'mean_fidelity': float(np.mean(primary_fidelities)),
+            'max_fidelity': float(max(primary_fidelities)),
+            'quantum_confidence': 1.0 - f_min,
+            'f_min_amplitude': round(f_min_amp, 4) if f_min_amp is not None else None,
+            'encoding': 'angle+amplitude',
+            # If angle F_min < amplitude F_min, angle encoding caught a correlation
+            # that amplitude encoding's global normalization masked
+            'correlation_signal_detected': (
+                f_min_amp is not None and f_min < f_min_amp - 0.05
+            ),
         }
 
     def compute_minimum_fidelity_keyed(self, current_residual: np.ndarray,
@@ -190,14 +319,21 @@ class QuantumValidator:
         return result
 
     def add_to_memory(self, residual: np.ndarray):
-        """Add a residual direction to quantum memory."""
-        state = self.encode_residual(residual)
-        self.memory_states.append(state)
+        """Add a residual direction to both amplitude and angle quantum memory."""
+        # Amplitude memory (magnitude baseline)
+        amp_state = self.encode_residual(residual)
+        self.memory_states.append(amp_state)
+
+        # Angle memory (relational baseline)
+        angle_state = self.encode_residual_angle(residual)
+        self.memory_angle_states.append(angle_state)
+
         self.memory_residuals.append(residual.copy())
 
     def clear_memory(self):
-        """Clear quantum memory."""
+        """Clear all quantum memory."""
         self.memory_states = []
+        self.memory_angle_states = []
         self.memory_residuals = []
 
     def validate_novelty(self, residual: np.ndarray,
@@ -242,18 +378,18 @@ class QuantumValidator:
         Compute quantum-enhanced risk score (0-100).
 
         Combines:
-        - Reconstruction residual magnitude
-        - Quantum fidelity (directional novelty)
-        - Number of novel dimensions detected
+        - Angle-encoded fidelity (primary — detects correlated feature changes)
+        - Amplitude-encoded fidelity (secondary — detects magnitude/direction)
+        - Residual magnitude
         """
         if memory_basis and len(memory_basis) > 0:
-            temp_states = []
-            for m in memory_basis:
-                temp_states.append(self.encode_residual(m))
-            old_states = self.memory_states
-            self.memory_states = temp_states
+            old_amp = self.memory_states
+            old_angle = self.memory_angle_states
+            self.memory_states = [self.encode_residual(m) for m in memory_basis]
+            self.memory_angle_states = [self.encode_residual_angle(m) for m in memory_basis]
             result = self.compute_minimum_fidelity(features)
-            self.memory_states = old_states
+            self.memory_states = old_amp
+            self.memory_angle_states = old_angle
         else:
             result = self.compute_minimum_fidelity(features)
 
@@ -263,7 +399,11 @@ class QuantumValidator:
         residual_magnitude = float(np.linalg.norm(features))
         magnitude_score = min(residual_magnitude / 2.0, 1.0)
 
-        risk_score = (0.6 * quantum_novelty + 0.4 * magnitude_score) * 100
+        # Correlation bonus: if angle encoding caught something amplitude missed,
+        # bump risk score slightly — this is a multi-feature correlated attack pattern
+        correlation_bonus = 0.05 if result.get('correlation_signal_detected') else 0.0
+
+        risk_score = (0.6 * quantum_novelty + 0.4 * magnitude_score + correlation_bonus) * 100
         risk_score = min(max(risk_score, 0), 100)
 
         if risk_score >= 75:
@@ -275,35 +415,71 @@ class QuantumValidator:
         else:
             severity = 'LOW'
 
+        correlation_note = ""
+        if result.get('correlation_signal_detected'):
+            correlation_note = (
+                "Angle encoding detected correlated multi-feature deviation — "
+                "this pattern is only visible to the relational quantum circuit."
+            )
+
         return {
             'risk_score': round(risk_score, 1),
             'severity': severity,
             'quantum_novelty': round(quantum_novelty * 100, 1),
             'magnitude_score': round(magnitude_score * 100, 1),
             'f_min': round(f_min, 4),
-            'is_directionally_novel': f_min < 0.5
+            'f_min_amplitude': result.get('f_min_amplitude'),
+            'is_directionally_novel': f_min < 0.5,
+            'correlation_signal_detected': result.get('correlation_signal_detected', False),
+            'correlation_note': correlation_note,
+            'encoding': 'angle+amplitude',
         }
 
 
 def draw_circuit_text() -> str:
-    """Generate a text representation of the TAARA quantum circuit."""
+    """Generate a text representation of the TAARA dual-encoding quantum circuits."""
     return """
-    TAARA Quantum Validation Circuit (4 Qubits)
-    =============================================
+    TAARA Quantum Validation — Dual Encoding (4 Qubits)
+    ====================================================
 
-    |q3> ─ |ψ⟩ ─ H ─ ● ─────── ⊕ ─ RX ─ RY ─ RZ ─ ⟨M⟩
+    CIRCUIT A: Amplitude Encoding (magnitude + direction baseline)
+    ─────────────────────────────────────────────────────────────
+    |q3> ─ |ψ⟩ ─ H ─ ● ─────── ⊕ ─ RX ─ RY ─ RZ ─ ⟨state⟩
                       │         │
-    |q2> ─ |ψ⟩ ─ H ─ ⊕ ─ ● ─── │ ─ RX ─ RY ─ RZ ─ ⟨M⟩
+    |q2> ─ |ψ⟩ ─ H ─ ⊕ ─ ● ─── │ ─ RX ─ RY ─ RZ ─ ⟨state⟩
                           │     │
-    |q1> ─ |ψ⟩ ─ H ────── ⊕ ─ ● ─ RX ─ RY ─ RZ ─ ⟨M⟩
+    |q1> ─ |ψ⟩ ─ H ────── ⊕ ─ ● ─ RX ─ RY ─ RZ ─ ⟨state⟩
                                 │
-    |q0> ─ |ψ⟩ ─ H ─────────── ● ─ RX ─ RY ─ RZ ─ ⟨M⟩
+    |q0> ─ |ψ⟩ ─ H ─────────── ● ─ RX ─ RY ─ RZ ─ ⟨state⟩
 
-    |ψ⟩ : Amplitude Embedding    H : Hadamard Gate
-    ●/⊕ : Ring CNOT Entanglement  RX/RY/RZ : Parameterized Rotations (π/4)
-    ⟨M⟩ : Computational Basis Measurement
+    |ψ⟩ : AmplitudeEmbedding(Δ̂)    H : Hadamard
+    ●/⊕ : Ring CNOT                 RX/RY/RZ : Fixed rotations (π/4)
 
-    Circuit Depth: 5 | Qubits: 4 | Parameters: 12 (fixed)
+    CIRCUIT B: Angle Encoding (feature correlation detector — primary F_min)
+    ─────────────────────────────────────────────────────────────────────────
+    |q3> ─ Rx(θ₃) ─ ● ─────── ⊕ ─ Ry(θ₃) ─ ⊕ ─────── ● ─ ⟨state⟩
+                     │         │             │           │
+    |q2> ─ Rx(θ₂) ─ ⊕ ─ ● ─── │ ─ Ry(θ₂) ─ │ ─ ● ─── │ ─ ⟨state⟩
+                         │     │             │   │     │
+    |q1> ─ Rx(θ₁) ─────── ⊕ ─ ● ─ Ry(θ₁) ─ ● ─ ⊕ ─── │ ─ ⟨state⟩
+                                │                       │
+    |q0> ─ Rx(θ₀) ─────────── ● ─ Ry(θ₀) ─────────── ● ─ ⟨state⟩
+
+    θᵢ = π/2 + arctan(feature_i)   → 0 if zero, poles if deviant
+    Rx(θᵢ) : AngleEmbedding(rotation='X')
+    Ry(θᵢ) : AngleEmbedding(rotation='Y')  [2nd layer — 2nd-order correlations]
+    ●/⊕    : Ring CNOT (forward then reverse — full pairwise coverage)
+
+    WHY ANGLE ENCODING MATTERS:
+    If two features deviate together (correlated attack pattern), the Rx-CNOT
+    layer creates constructive interference. Amplitude encoding only sees ||Δ||.
+    Angle encoding sees WHICH features changed together — the attack fingerprint.
+
+    Primary F_min: Angle circuit  |  Baseline F_min: Amplitude circuit
+    Correlation signal detected if: F_angle < F_amplitude − 0.05
+    Quantum-confirmed novelty: F_min < 0.5 (parameter-free geometric midpoint)
+
+    Circuit Depth: A=5 layers, B=4 layers | Qubits: 4 each | Total states: 2 × 16-dim
     """
 
 

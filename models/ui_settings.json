@@ -1,0 +1,8 @@
+{
+  "firm_name": "GoodWinSun",
+  "theme": "steel",
+  "webhook_url": "",
+  "alert_email": "",
+  "autonomy_level": 0.5,
+  "scan_depth": "Standard"
+}

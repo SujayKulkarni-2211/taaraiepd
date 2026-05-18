@@ -1,0 +1,22 @@
+{
+  "arm_stats": {
+    "normal:ssh:firewall_rule": {
+      "n_proposed": 3,
+      "n_approved": 0,
+      "n_executed": 0,
+      "n_success": 0,
+      "n_rolled_back": 0,
+      "total_reward": 0.0
+    },
+    "normal:ssh:generic": {
+      "n_proposed": 2,
+      "n_approved": 0,
+      "n_executed": 0,
+      "n_success": 0,
+      "n_rolled_back": 0,
+      "total_reward": 0.0
+    }
+  },
+  "contrast_pairs": [],
+  "autonomy_level": 1
+}
