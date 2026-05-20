@@ -23,7 +23,7 @@ export default function App() {
   const [serverError, setServerError]   = useState('');
   const [loggedIn, setLoggedIn]         = useState(false);
   const [apiKey, setApiKey]             = useState('');
-  const [activeTab, setActiveTab]       = useState('systems');
+  const [activeTab, setActiveTab]       = useState('clients');
   const [activeAlert, setActiveAlert]   = useState(null);
   const [theme, setTheme]               = useState('dark');
   const [settings, setSettings]         = useState({ firm_name: '' });
@@ -105,7 +105,7 @@ export default function App() {
   if (!loggedIn)    return <LoginScreen onLogin={handleLogin} />;
 
   return (
-    <div className="app-root">
+    <div className={`app-root${activeAlert ? ' app-root--alert' : ''}`}>
       {activeAlert && (
         <AnomalyBanner alert={activeAlert} onDismiss={handleDismissAlert} />
       )}

@@ -79,8 +79,43 @@ def _styles():
     return s
 
 
+_CHAR_MAP = {
+    '—': '--',   # em dash
+    '–': '-',    # en dash
+    '‘': "'",    # left single quote
+    '’': "'",    # right single quote
+    '“': '"',    # left double quote
+    '”': '"',    # right double quote
+    '•': '*',    # bullet
+    '…': '...',  # ellipsis
+    ' ': ' ',    # non-breaking space
+    '·': '*',    # middle dot
+    '→': '->',   # right arrow
+    '←': '<-',   # left arrow
+    'é': 'e',    # e acute
+    'è': 'e',    # e grave
+    'ê': 'e',    # e circumflex
+    'à': 'a',    # a grave
+    'â': 'a',    # a circumflex
+    'ô': 'o',    # o circumflex
+    'û': 'u',    # u circumflex
+    'ü': 'u',    # u umlaut
+    'ç': 'c',    # c cedilla
+    '™': '(TM)', # trademark
+    '®': '(R)',  # registered
+    '°': 'deg',  # degree
+}
+
+
 def _esc(text, limit=0) -> str:
-    t = html.escape(str(text or ''))
+    """Escape for ReportLab XML and transliterate non-Latin-1 chars to ASCII-safe equivalents."""
+    t = str(text or '')
+    # Transliterate known Unicode chars that Helvetica can't render
+    for char, replacement in _CHAR_MAP.items():
+        t = t.replace(char, replacement)
+    # Drop any remaining non-Latin-1 chars rather than letting ReportLab fail silently
+    t = t.encode('latin-1', errors='replace').decode('latin-1')
+    t = html.escape(t)
     if limit:
         t = t[:limit]
     return t
@@ -145,14 +180,16 @@ def _extract(analysis_results: Dict) -> Dict:
     repo_risk = min(len(critical)*25 + len(high)*15 + len(medium)*5 + len(low)*1, 100)
 
     # Include SSH findings in risk — a critical SSH finding alone warrants HIGH risk
-    ssh_critical = [f for f in (ssh.get('findings', ssh.get('security_findings', [])))
-                    if f.get('severity') in ('critical', 'high')]
+    ssh_all_findings = ssh.get('findings', ssh.get('security_findings', []))
+    # Also collect findings from categories (SSH platform stores them there)
+    if not ssh_all_findings:
+        for cat_data in ssh.get('categories', {}).values():
+            ssh_all_findings.extend(cat_data.get('findings', []))
+    ssh_critical = [f for f in ssh_all_findings if f.get('severity') in ('critical', 'high')]
     if not repo_risk and ssh_critical:
-        # SSH-only scan: derive risk from SSH findings
         repo_risk = min(len([f for f in ssh_critical if f.get('severity') == 'critical'])*30 +
                         len([f for f in ssh_critical if f.get('severity') == 'high'])*15, 100)
     elif ssh_critical:
-        # Add SSH risk on top of repo risk
         repo_risk = min(repo_risk +
                         len([f for f in ssh_critical if f.get('severity') == 'critical'])*15 +
                         len([f for f in ssh_critical if f.get('severity') == 'high'])*8, 100)
@@ -162,30 +199,69 @@ def _extract(analysis_results: Dict) -> Dict:
     )
     struct_chains = [c for c in chains if c.get('chain_id') != 'graphrag:llm_dependency_analysis']
 
-    # SSH / behavioral data
-    ssh_findings = ssh.get('findings', ssh.get('security_findings', []))
+    # Resolve hostname: try multiple locations in priority order
+    # 1. ssh.hostname (set by SSH analysis wrapper)
+    # 2. ssh.host (set by platform_manager.collect_security_data)
+    # 3. categories.system_info.info.hostname (from actual `hostname` command)
+    # 4. analysis_results.platform (platform type string)
+    # 5. repo target
+    system_info = ssh.get('categories', {}).get('system_info', {}).get('info', {})
+    resolved_hostname = (
+        ssh.get('hostname')
+        or ssh.get('host')
+        or system_info.get('hostname')
+        or analysis_results.get('platform', '')
+        or ''
+    )
+
+    # SSH / behavioral data — build full findings list from all categories
+    ssh_findings = ssh_all_findings
     quantum_result = (
         ssh.get('quantum_result')
         or ssh.get('quantum_risk')
         or analysis_results.get('quantum_result')
+        or analysis_results.get('quantum_risk')
         or {}
     )
     f_min = quantum_result.get('f_min', rq.get('fidelity', None))
+    # Clamp: f_min=1.0 from the fallback error path means "no real quantum result"
+    if f_min is not None and f_min >= 1.0:
+        f_min = None
     f_min_amp = quantum_result.get('f_min_amplitude')
     correlation_detected = quantum_result.get('correlation_signal_detected', False)
+
+    # Target display: prefer repo path, fall back to hostname
+    target = (
+        repo.get('target')
+        or repo.get('repo')
+        or resolved_hostname
+        or 'Not specified'
+    )
 
     # Agent intelligence
     agent_actions = agent_result.get('actions_taken', [])
     agent_graph_chains = agent_result.get('graph_chains', [])
     agent_hypothesis = agent_result.get('hypothesis', '')
 
+    # Scan date: prefer repo, then top-level timestamp
+    scanned_at = repo.get('scanned_at', '')
+    if not scanned_at and analysis_results.get('timestamp'):
+        try:
+            scanned_at = datetime.fromtimestamp(analysis_results['timestamp']).strftime('%Y-%m-%d')
+        except Exception:
+            pass
+    if not scanned_at:
+        scanned_at = datetime.now().strftime('%Y-%m-%d')
+    else:
+        scanned_at = scanned_at[:10]
+
     return {
         'repo': repo,
         'ssh': ssh,
-        'target': repo.get('target', repo.get('repo', ssh.get('hostname', 'Unknown'))),
-        'hostname': ssh.get('hostname', ''),
+        'target': target,
+        'hostname': resolved_hostname,
         'repo_name': repo.get('repo', ''),
-        'scanned_at': repo.get('scanned_at', datetime.now().isoformat())[:10],
+        'scanned_at': scanned_at,
         'packages': repo.get('packages_resolved', 0),
         'findings': findings,
         'critical': critical,
@@ -447,14 +523,13 @@ def _cover(story, s, d: Dict, client_name: str, config: Dict):
 
     # TAARA brand header
     story.append(Paragraph("TAARA Q.0", s['TaaraH1']))
-    story.append(Paragraph("Quantum Infrastructure Intelligence Platform", s['TaaraBigLabel']))
     _rule(story)
     story.append(Paragraph("Prevent Crash. Preserve Cash.", s['TaaraTagline']))
     story.append(Spacer(1, 0.5 * cm))
 
     # Risk score — inline so it doesn't collide
     risk_color = '#cc0000' if d['repo_risk'] >= 75 else '#e65c00' if d['repo_risk'] >= 50 else '#cc8800' if d['repo_risk'] >= 25 else '#227722'
-    risk_label = 'CRITICAL RISK' if d['repo_risk'] >= 75 else 'HIGH RISK' if d['repo_risk'] >= 50 else 'MODERATE' if d['repo_risk'] >= 25 else 'LOW RISK'
+    risk_label = 'CRITICAL RISK' if d['repo_risk'] >= 75 else 'HIGH RISK' if d['repo_risk'] >= 50 else 'MODERATE RISK' if d['repo_risk'] >= 25 else 'LOW RISK'
     story.append(Paragraph(
         f'<font color="{risk_color}" size="28"><b>{d["repo_risk"]}/100</b></font>'
         f'  <font color="#555555" size="11">—  Repository Risk Score  ·  {risk_label}</font>',
@@ -465,8 +540,11 @@ def _cover(story, s, d: Dict, client_name: str, config: Dict):
         fmin_color = '#cc0000' if d['f_min'] < 0.3 else '#e65c00' if d['f_min'] < 0.5 else '#0f3460'
         fmin_label = "CRITICAL DIVERGENCE" if d['f_min'] < 0.3 else "UNSAFE DIRECTION" if d['f_min'] < 0.5 else "DRIFTING"
         story.append(Paragraph(
-            f'<font color="{fmin_color}"><b>F = |&lt;psi_t|psi_m&gt;|^2 = {d["f_min"]:.4f}</b>  ·  {fmin_label}</font>'
-            f'  <font color="#888888" size="9">({round((1-d["f_min"])*100,1)}% orthogonal to baseline)</font>',
+            '<font color="{c}"><b>Quantum Fidelity F_min = {v:.4f}</b>  --  {lbl}</font>'
+            '  <font color="#888888" size="9">({orth}% orthogonal to baseline)</font>'.format(
+                c=fmin_color, v=d['f_min'], lbl=fmin_label,
+                orth=round((1 - d['f_min']) * 100, 1)
+            ),
             ParagraphStyle('FminLine', fontSize=11, alignment=TA_CENTER, spaceAfter=10, leading=16)
         ))
     story.append(Spacer(1, 0.3 * cm))
@@ -485,10 +563,12 @@ def _cover(story, s, d: Dict, client_name: str, config: Dict):
                 len(d['medium']), len(d['low'])
             )
         ])
+    elif d['target'] and d['target'] != 'Not specified':
+        cover_rows.append(['Scan Target', _esc(d['target'], 65)])
     if d['hostname']:
         cover_rows.append(['Server Assessed', _esc(d['hostname'])])
         if d['ssh_findings']:
-            cover_rows.append(['SSH Findings', str(len(d['ssh_findings']))])
+            cover_rows.append(['Infrastructure Findings', str(len(d['ssh_findings']))])
     if d['f_min'] is not None:
         cover_rows.append([
             'Quantum F_min (angle)',
@@ -503,15 +583,78 @@ def _cover(story, s, d: Dict, client_name: str, config: Dict):
             cover_rows.append(['Correlation Signal', 'Detected — angle encoding found correlated multi-feature anomaly'])
 
     story.append(_tbl(cover_rows, [175, PAGE_W - 175]))
-    story.append(Spacer(1, 1.0 * cm))
+    story.append(Spacer(1, 0.6 * cm))
 
+    # Finding severity summary — fills the cover page so it's not blank
+    if d['findings'] or d['ssh_findings']:
+        _rule(story, color=TAARA_NAVY, width=0.5)
+        story.append(Paragraph("<b>Finding Summary</b>", s['TaaraH3']))
+
+        sev_data = [['Severity', 'Count', 'Priority']]
+        if d['critical']:
+            sev_data.append([
+                Paragraph('<font color="#cc0000"><b>CRITICAL</b></font>',
+                          ParagraphStyle('C', fontSize=9, fontName='Helvetica-Bold')),
+                str(len(d['critical'])),
+                'Fix within 24-72 hours'
+            ])
+        if d['high']:
+            sev_data.append([
+                Paragraph('<font color="#e65c00"><b>HIGH</b></font>',
+                          ParagraphStyle('H', fontSize=9, fontName='Helvetica-Bold')),
+                str(len(d['high'])),
+                'Fix within 1 week'
+            ])
+        if d['medium']:
+            sev_data.append([
+                Paragraph('<font color="#cc8800"><b>MEDIUM</b></font>',
+                          ParagraphStyle('M', fontSize=9, fontName='Helvetica-Bold')),
+                str(len(d['medium'])),
+                'Fix within 1 month'
+            ])
+        if d['low']:
+            sev_data.append([
+                Paragraph('<font color="#227722"><b>LOW</b></font>',
+                          ParagraphStyle('L', fontSize=9, fontName='Helvetica-Bold')),
+                str(len(d['low'])),
+                'Fix within 1 quarter'
+            ])
+        if d['ssh_findings']:
+            ssh_crit = sum(1 for f in d['ssh_findings'] if f.get('severity') == 'critical')
+            ssh_high = sum(1 for f in d['ssh_findings'] if f.get('severity') == 'high')
+            sev_data.append([
+                Paragraph('<font color="#555555"><b>INFRA / SSH</b></font>',
+                          ParagraphStyle('I', fontSize=9, fontName='Helvetica-Bold')),
+                '{} ({} crit, {} high)'.format(len(d['ssh_findings']), ssh_crit, ssh_high),
+                'Server hardening required'
+            ])
+        if len(sev_data) > 1:
+            story.append(_tbl(sev_data, [120, 80, PAGE_W - 200]))
+            story.append(Spacer(1, 0.4 * cm))
+
+    # Exploit chains call-out
+    if d['exploit_chains']:
+        story.append(Paragraph(
+            '<font color="#cc0000"><b>{} exploit chain{} identified</b></font> — '
+            'attacker paths from your application to vulnerable dependencies are mapped '
+            'in Section 2.4.'.format(
+                len(d['exploit_chains']),
+                's' if len(d['exploit_chains']) != 1 else ''
+            ),
+            ParagraphStyle('ExploitNote', fontSize=10, fontName='Helvetica',
+                           textColor=colors.HexColor('#333333'), spaceAfter=8, leading=14)
+        ))
+        story.append(Spacer(1, 0.2 * cm))
+
+    story.append(Spacer(1, 0.4 * cm))
+    _rule(story, color=TAARA_LIGHT, width=0.3)
     story.append(Paragraph(
         "This report is confidential. All findings derive from automated real-data analysis. "
         "No issues have been invented, extrapolated, or estimated. "
         "Quantum fidelity scores use a 4-qubit PennyLane circuit with dual encoding.",
         s['TaaraCaption']
     ))
-    story.append(Spacer(1, 0.3 * cm))
+    story.append(Spacer(1, 0.2 * cm))
     story.append(Paragraph(
         "TAARA Q.0  |  GoodWinSun  |  Powered by Groq + PennyLane + PQC Kyber768",
         s['TaaraCaption']
@@ -523,10 +666,13 @@ def _exec_summary(story, s, d: Dict, client_name: str):
 
     # Snapshot metrics table
     snap = [['Metric', 'Value', 'Status']]
-    snap.append(['Repository Risk Score', f"{d['repo_risk']}/100",
-                 'CRITICAL' if d['repo_risk'] >= 75 else 'HIGH' if d['repo_risk'] >= 50 else 'MODERATE'])
-    snap.append(['Critical Findings', str(len(d['critical'])), 'Immediate action required'])
-    snap.append(['High Findings', str(len(d['high'])), 'Fix within 1 week'])
+    risk_status = ('CRITICAL RISK' if d['repo_risk'] >= 75 else 'HIGH RISK' if d['repo_risk'] >= 50
+                   else 'MODERATE RISK' if d['repo_risk'] >= 25 else 'LOW RISK')
+    snap.append(['Repository Risk Score', f"{d['repo_risk']}/100", risk_status])
+    crit_status = 'Immediate action required' if d['critical'] else 'None found'
+    snap.append(['Critical Findings', str(len(d['critical'])), crit_status])
+    high_status = 'Fix within 1 week' if d['high'] else 'None found'
+    snap.append(['High Findings', str(len(d['high'])), high_status])
     if d['ssh_findings']:
         snap.append(['SSH / Infra Findings', str(len(d['ssh_findings'])),
                      'Server hardening needed'])
@@ -551,16 +697,33 @@ def _exec_summary(story, s, d: Dict, client_name: str):
                 story.append(Paragraph(_esc(para.strip()), s['TaaraBody']))
     else:
         # Fallback: data-driven but non-Groq
-        story.append(Paragraph(
-            "TAARA scanned {} on {} and identified {} security issues across {} packages — "
-            "{} critical and {} high severity. The repository risk score is {}/100. "
-            "Immediate action is required on the {} critical findings.".format(
-                _esc(d['target']), _esc(d['scanned_at']), len(d['findings']),
-                d['packages'], len(d['critical']), len(d['high']),
-                d['repo_risk'], len(d['critical'])
-            ),
-            s['TaaraBody']
-        ))
+        if d['findings']:
+            action_note = (
+                "Immediate action is required on the {} critical finding{}.".format(
+                    len(d['critical']), 's' if len(d['critical']) != 1 else ''
+                ) if d['critical'] else
+                "No critical findings. {} high severity finding{} require attention within 1 week.".format(
+                    len(d['high']), 's' if len(d['high']) != 1 else ''
+                ) if d['high'] else
+                "No critical or high severity findings detected."
+            )
+            story.append(Paragraph(
+                "TAARA scanned {} on {} and identified {} security issue{} across {} packages — "
+                "{} critical and {} high severity. The repository risk score is {}/100. {}".format(
+                    _esc(d['target']), _esc(d['scanned_at']), len(d['findings']),
+                    's' if len(d['findings']) != 1 else '',
+                    d['packages'], len(d['critical']), len(d['high']),
+                    d['repo_risk'], action_note
+                ),
+                s['TaaraBody']
+            ))
+        else:
+            story.append(Paragraph(
+                "TAARA scanned {} on {}. No repository vulnerability findings were detected.".format(
+                    _esc(d['target']), _esc(d['scanned_at'])
+                ),
+                s['TaaraBody']
+            ))
 
     # Quantum section
     if d['f_min'] is not None:
@@ -867,30 +1030,55 @@ def _action_plan(story, s, d: Dict):
             else:
                 story.append(Paragraph(_esc(line), s['TaaraBody']))
     else:
-        # Data-driven fallback
-        story.append(Paragraph("<b>THIS WEEK — Critical (24–72 hours)</b>", s['TaaraH3']))
-        for f in d['critical'][:5]:
-            fixes = f.get('fix_versions', [])
-            fix_str = f"upgrade to {fixes[0]}" if fixes else "upgrade to latest patched version"
-            story.append(Paragraph(
-                f"• <b>{_esc(f.get('package', '?'))}</b>: {_esc(fix_str)}  |  {_esc(f.get('osv_id', ''))}",
-                s['TaaraIndent']
-            ))
-        story.append(Spacer(1, 0.2 * cm))
+        # Data-driven fallback — only render sections that have actual content
+        if d['critical']:
+            story.append(Paragraph("<b>THIS WEEK — Critical (24-72 hours)</b>", s['TaaraH3']))
+            for f in d['critical'][:5]:
+                fixes = f.get('fix_versions', [])
+                fix_str = "upgrade to {}".format(fixes[0]) if fixes else "upgrade to latest patched version"
+                story.append(Paragraph(
+                    "• <b>{}</b>: {}  |  {}".format(
+                        _esc(f.get('package', '?')), _esc(fix_str), _esc(f.get('osv_id', ''))
+                    ),
+                    s['TaaraIndent']
+                ))
+            story.append(Spacer(1, 0.2 * cm))
+        elif d['high']:
+            story.append(Paragraph("<b>THIS WEEK — High severity (immediate attention)</b>", s['TaaraH3']))
 
-        story.append(Paragraph("<b>THIS MONTH — High severity</b>", s['TaaraH3']))
-        for f in d['high'][:5]:
-            fixes = f.get('fix_versions', [])
-            fix_str = f"upgrade to {fixes[0]}" if fixes else "upgrade to latest patched version"
-            story.append(Paragraph(
-                f"• <b>{_esc(f.get('package', '?'))}</b>: {_esc(fix_str)}",
-                s['TaaraIndent']
-            ))
-        story.append(Spacer(1, 0.2 * cm))
+        if d['high']:
+            story.append(Paragraph("<b>THIS MONTH — High severity</b>", s['TaaraH3']))
+            for f in d['high'][:5]:
+                fixes = f.get('fix_versions', [])
+                fix_str = "upgrade to {}".format(fixes[0]) if fixes else "upgrade to latest patched version"
+                story.append(Paragraph(
+                    "• <b>{}</b>: {}".format(_esc(f.get('package', '?')), _esc(fix_str)),
+                    s['TaaraIndent']
+                ))
+            story.append(Spacer(1, 0.2 * cm))
 
-        story.append(Paragraph("<b>THIS QUARTER — Process</b>", s['TaaraH3']))
+        if d['ssh_findings']:
+            story.append(Paragraph("<b>THIS WEEK — Infrastructure hardening</b>", s['TaaraH3']))
+            for f in d['ssh_findings'][:3]:
+                story.append(Paragraph(
+                    "• [{}] {}".format(
+                        _esc(f.get('severity', '?').upper()),
+                        _esc(f.get('title', f.get('description', '?'))[:80])
+                    ),
+                    s['TaaraIndent']
+                ))
+            story.append(Spacer(1, 0.2 * cm))
+
+        story.append(Paragraph("<b>THIS QUARTER — Process improvements</b>", s['TaaraH3']))
         story.append(Paragraph("• Pin all GitHub Actions to commit SHAs, not version tags.", s['TaaraIndent']))
         story.append(Paragraph("• Add automated dependency scanning to CI (run on every PR).", s['TaaraIndent']))
+
+        if not d['critical'] and not d['high'] and not d['ssh_findings']:
+            story.append(Paragraph(
+                "No critical or high severity findings detected. Continue regular scanning "
+                "and monitor for new CVE disclosures affecting your dependency stack.",
+                s['TaaraBody']
+            ))
 
 
 def _taaraware_pitch(story, s, d: Dict):

@@ -84,6 +84,14 @@ class DNAEmbedder:
         self.scaler = StandardScaler()
         self.is_trained = False
 
+        # Online EMA of live feature distribution — blended with pretrained scaler at inference.
+        # Tracks this server's actual behavior so normalization adapts without forgetting the
+        # pretrained distribution (Cowrie/benchmark). Blend: 70% pretrained + 30% live.
+        self._live_mean: np.ndarray | None = None
+        self._live_std:  np.ndarray | None = None
+        self._live_n:    int = 0
+        self._ema_alpha: float = 0.05   # EMA decay — slow drift, not noisy per-sample update
+
         # Try to load existing model
         self.load()
 
@@ -174,6 +182,30 @@ class DNAEmbedder:
             'samples': len(data)
         }
 
+    def _update_live_stats(self, vec: np.ndarray):
+        """EMA update of per-server mean and std from a single observation."""
+        v = np.array(vec, dtype=np.float64).flatten()[:19]
+        if self._live_mean is None:
+            self._live_mean = v.copy()
+            self._live_std  = np.ones(len(v), dtype=np.float64)
+        else:
+            self._live_mean = (1 - self._ema_alpha) * self._live_mean + self._ema_alpha * v
+            self._live_std  = (1 - self._ema_alpha) * self._live_std  + self._ema_alpha * np.abs(v - self._live_mean)
+        self._live_n += 1
+
+    def _blended_transform(self, features: np.ndarray) -> np.ndarray:
+        """
+        Normalize features using a 70/30 blend of pretrained scaler and live EMA.
+        Falls back to pure pretrained scaler until we have ≥10 live observations.
+        """
+        pretrained_norm = self.scaler.transform(np.clip(features, -10, 10))
+        if self._live_n < 10 or self._live_mean is None:
+            return pretrained_norm
+        live_std = np.where(self._live_std > 1e-6, self._live_std, 1.0)
+        live_norm = (features - self._live_mean) / live_std
+        live_norm = np.clip(live_norm, -10, 10)
+        return 0.7 * pretrained_norm + 0.3 * live_norm
+
     def embed(self, features: np.ndarray) -> np.ndarray:
         """
         Convert raw features to embeddings.
@@ -197,9 +229,12 @@ class DNAEmbedder:
         if single_sample:
             features = features.reshape(1, -1)
 
-        # Normalize
+        # Update live EMA with this observation
+        self._update_live_stats(features[0] if single_sample else features.mean(axis=0))
+
+        # Normalize — blended scaler if live stats are mature (≥10 observations)
         try:
-            features_normalized = self.scaler.transform(features)
+            features_normalized = self._blended_transform(features)
         except Exception as e:
             print(f"[DNAEmbedder] Scaling error: {e}")
             return np.zeros((len(features), 8), dtype=np.float32)
@@ -227,8 +262,8 @@ class DNAEmbedder:
         if not self.is_trained:
             return 0.0
 
-        # Normalize
-        features_normalized = self.scaler.transform(features.reshape(1, -1))
+        # Normalize — same blended transform used in embed()
+        features_normalized = self._blended_transform(features.reshape(1, -1))
 
         # Reconstruct
         self.model.eval()
@@ -350,8 +385,11 @@ class DNAEmbedder:
             return {'status': 'skipped', 'reason': 'too_few_samples', 'samples': len(data)}
 
         print(f"[DNAEmbedder] Finetuning on {len(data)} live samples ({epochs} epochs, lr={lr})...")
-        # Use existing scaler — don't refit it
-        data_normalized = self.scaler.transform(np.clip(data, -10, 10))
+        # Seed live stats from the baseline batch before finetuning so blended
+        # normalization is consistent between finetune and subsequent inference calls.
+        for vec in data:
+            self._update_live_stats(vec)
+        data_normalized = self._blended_transform(data)
         X = torch.FloatTensor(data_normalized)
 
         criterion = nn.MSELoss()

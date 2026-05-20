@@ -18,6 +18,15 @@ html, body, #root {
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
+  transition: box-shadow 0.4s ease;
+}
+.app-root--alert {
+  box-shadow: inset 0 0 0 2px rgba(233, 69, 96, 0.55);
+  animation: alert-pulse-root 2s ease-in-out infinite;
+}
+@keyframes alert-pulse-root {
+  0%, 100% { box-shadow: inset 0 0 0 2px rgba(233, 69, 96, 0.55); }
+  50%       { box-shadow: inset 0 0 0 3px rgba(233, 69, 96, 0.85); }
 }
 
 .app-body {
@@ -348,4 +357,13 @@ pre {
   font-size: 11px;
   color: var(--text-faint);
   letter-spacing: 0.5px;
+}
+/* Alert state: TAARA logo pulses red */
+.app-root--alert .top-tabbar-logo {
+  color: #e94560;
+  text-shadow: 0 0 12px rgba(233, 69, 96, 0.6);
+}
+.app-root--alert .top-tabbar {
+  border-bottom-color: rgba(233, 69, 96, 0.35);
+  background: linear-gradient(180deg, rgba(233, 69, 96, 0.06) 0%, var(--bg-surface) 100%);
 }

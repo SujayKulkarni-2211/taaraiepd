@@ -78,13 +78,15 @@ function startPythonServer() {
 }
 
 // ── Poll until server responds on /api/health ─────────────────────────────────
-function waitForServer(maxAttempts = 30, intervalMs = 1000) {
+// Note: uvicorn logs "Application startup complete" BEFORE _init_systems() finishes
+// loading torch/pennylane models (~60s cold start). Trust only HTTP health check.
+function waitForServer(maxAttempts = 90, intervalMs = 1000) {
   return new Promise((resolve, reject) => {
     let attempts = 0;
 
     const check = () => {
       attempts++;
-      const req = http.get(`${SERVER_URL}/api/health`, { timeout: 2000 }, (res) => {
+      const req = http.get(`${SERVER_URL}/api/health`, { timeout: 3000 }, (res) => {
         if (res.statusCode === 200) {
           console.log(`[TAARA] Server ready after ${attempts} attempt(s)`);
           resolve();
@@ -104,8 +106,8 @@ function waitForServer(maxAttempts = 30, intervalMs = 1000) {
       setTimeout(check, intervalMs);
     };
 
-    // First check after a short delay to let the process start
-    setTimeout(check, 800);
+    // First check after 2s — give uvicorn time to bind the port
+    setTimeout(check, 2000);
   });
 }
 
@@ -193,7 +195,12 @@ ipcMain.handle('taara:api', async (_event, { endpoint, method = 'GET', body = nu
 
     req.on('error', (err) => reject(err));
     req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
-    req.setTimeout(300000); // 5 min timeout for SSH analysis
+    // Fast endpoints get short timeout; slow SSH/analysis/deploy get long timeout
+    const fastEndpoints = ['/api/health', '/api/status', '/api/alerts', '/api/train/status',
+                           '/api/taaraware/status', '/api/taaraware/deployed', '/api/actions',
+                           '/api/agent/stats', '/api/taara/basis-status'];
+    const isFast = fastEndpoints.some(p => url.pathname.startsWith(p));
+    req.setTimeout(isFast ? 8000 : 300000);
 
     if (body) req.write(JSON.stringify(body));
     req.end();
@@ -202,7 +209,9 @@ ipcMain.handle('taara:api', async (_event, { endpoint, method = 'GET', body = nu
 
 // Open a local file path in the system default viewer
 ipcMain.handle('taara:openPDF', async (_event, filePath) => {
-  await shell.openPath(filePath);
+  // Resolve relative paths from PROJECT_ROOT
+  const resolved = path.isAbsolute(filePath) ? filePath : path.join(PROJECT_ROOT, filePath);
+  await shell.openPath(resolved);
 });
 
 // Open a URL in the system default browser
@@ -269,7 +278,7 @@ app.whenReady().then(async () => {
 
   try {
     // Wait for server, update window when ready
-    await waitForServer(40, 1000); // up to 40 seconds
+    await waitForServer(90, 1000); // up to 90 seconds — uvicorn+torch can take 60s cold start
     serverReady = true;
 
     // Tell the renderer the server is ready

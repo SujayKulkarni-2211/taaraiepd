@@ -37,7 +37,7 @@ const SSH_SUBTABS = [
   { id: 'agent',      icon: '⚡', label: 'Agent & Actions' },
   { id: 'security',   icon: '⛨', label: 'Unified Security' },
   { id: 'custom',     icon: '⌨', label: 'Custom Actions' },
-  { id: 'details',    icon: '⬥', label: 'TaaraWare Details' },
+  { id: 'details',    icon: '⬥', label: 'TAARA Details' },
 ];
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -470,13 +470,27 @@ function CostCard({ cost }) {
 // ── SSH Multi-Subtab View ─────────────────────────────────────────────────────
 function SSHView({ hostname, demoMode, subTab, setSubTab, analysisResults, setAnalysisResults, onAlertFired, onDisconnect }) {
   const [taarawareDeployed, setTaarawareDeployed] = useState(false);
+  // Lift training state here so it survives tab switches — TrainSubTab remounts on every switch
+  const [trainStatus, setTrainStatus]   = useState(null);
+  const [basisStatus, setBasisStatus]   = useState(null);
+  const trainPollRef = useRef(null);
 
-  // Check deployed status once on mount and after explicit deploy/revoke.
-  // Never flip to false from a poll — only from explicit revoke — to stop oscillation.
+  // Check deployed status once on connect
   useEffect(() => {
     api.taarawareDeployed()
       .then(r => { if (r.ok && r.data.deployed === true) setTaarawareDeployed(true); })
       .catch(() => {});
+  }, [hostname]);
+
+  // Poll training status at SSHView level — survives tab switches
+  useEffect(() => {
+    function pollTrain() {
+      api.trainStatus().then(r => { if (r.ok) setTrainStatus(r.data); }).catch(() => {});
+      api.basisStatus().then(r => { if (r.ok) setBasisStatus(r.data); }).catch(() => {});
+    }
+    pollTrain();
+    trainPollRef.current = setInterval(pollTrain, 3000);
+    return () => clearInterval(trainPollRef.current);
   }, [hostname]);
 
   return (
@@ -497,6 +511,10 @@ function SSHView({ hostname, demoMode, subTab, setSubTab, analysisResults, setAn
             transition: 'color 0.12s', whiteSpace: 'nowrap',
           }}>
             <span>{st.icon}</span><span>{st.label}</span>
+            {/* Show live training indicator in tab label when training is running */}
+            {st.id === 'train' && trainStatus?.status === 'running' && (
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--amber)', display: 'inline-block', marginLeft: 2 }} />
+            )}
           </button>
         ))}
         <div style={{ flex: 1 }} />
@@ -530,7 +548,14 @@ function SSHView({ hostname, demoMode, subTab, setSubTab, analysisResults, setAn
             onDeployed={() => setTaarawareDeployed(true)}
           />
         )}
-        {subTab === 'train'      && <TrainSubTab />}
+        {subTab === 'train'      && (
+          <TrainSubTab
+            trainStatus={trainStatus}
+            setTrainStatus={setTrainStatus}
+            basisStatus={basisStatus}
+            hostname={hostname}
+          />
+        )}
         {subTab === 'agent'      && <AgentSubTab />}
         {subTab === 'security'   && <SecuritySubTab />}
         {subTab === 'custom'     && <CustomActionsSubTab />}
@@ -586,6 +611,7 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
   const [loading, setLoading] = useState(true);
   const [fHistory, setFHistory] = useState([]);   // sparkline: [{t, f}]
   const [cpuHistory, setCpuHistory] = useState([]);
+  const [identities, setIdentities] = useState([]);
   const pollRef               = useRef(null);
 
   async function load() {
@@ -604,15 +630,21 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
       const f   = nov.f_min ?? combined.f_min;
       const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       if (f != null) setFHistory(h => [...h.slice(-29), { t: now, f }]);
-      // Always collect CPU for sparkline if available
-      if (fv.cpu_usage != null && fv.cpu_usage !== 0) setCpuHistory(h => [...h.slice(-29), { t: now, v: fv.cpu_usage }]);
+      // Collect commands_per_minute for sparkline — primary attack signal
+      const sparkVal = fv.commands_per_minute ?? fv.hardware_enum_count ?? fv.malware_exec_pattern;
+      if (sparkVal != null && sparkVal !== 0) setCpuHistory(h => [...h.slice(-29), { t: now, v: sparkVal }]);
     } catch (_) {}
     finally { setLoading(false); }
   }
 
   useEffect(() => {
     load();
-    pollRef.current = setInterval(load, 8000);
+    // Fetch identities separately — less frequent, only when TaaraWare has data
+    api.listIdentities().then(r => { if (r.ok) setIdentities(r.data.identities || []); }).catch(() => {});
+    pollRef.current = setInterval(() => {
+      load();
+      api.listIdentities().then(r => { if (r.ok) setIdentities(r.data.identities || []); }).catch(() => {});
+    }, 15000);
     return () => clearInterval(pollRef.current);
   }, []);
 
@@ -623,25 +655,27 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
   const qr          = data?.quantum_risk || {};
   const nov         = data?.novelty || {};
   const basisSize   = nov.basis_size ?? 0;
-  // Mature if 3+ vectors collected, OR pretrained model has already seeded live signals
-  const basisMature = basisSize >= 3 || (nov.quantum_confidence != null) || (nov.swap_fidelity != null);
-  // Always show live F_min — suppress anomaly ALERTS during calibration but always display the value
+  // Basis is mature only when real signals exist from actual TaaraWare data
+  const basisMature = basisSize >= 3 || (nov.quantum_confidence != null && nov.swap_fidelity != null);
+  // Live F_min — only from real data, never synthetic
   const fmin        = nov.f_min ?? data?.f_min ?? qr.f_min ?? data?.latest_f_min;
-  // V3 validated quantum signals (swap fidelity, directionality, phase coherence, quantum confidence)
+  // V3 validated quantum signals
   const swapFidelity    = nov.swap_fidelity    ?? null;
   const qDirectionality = nov.q_directionality ?? null;
   const phaseCoherence  = nov.phase_coherence  ?? null;
   const quantumConf     = nov.quantum_confidence ?? null;
+  // Per-identity threshold — server sends calibrated p95 value, fallback 0.4382
+  const alertThreshold  = nov.threshold ?? 0.4382;
   const qcColor = quantumConf == null ? 'var(--text-faint)'
     : quantumConf >= 0.75 ? '#e94560'
     : quantumConf >= 0.45 ? '#f5a623'
-    : quantumConf >= 0.1854 ? '#4a9eff'
+    : quantumConf > alertThreshold ? '#4a9eff'
     : '#22cc66';
   const qcLabel = quantumConf == null ? '—'
     : quantumConf >= 0.75 ? 'CRITICAL'
     : quantumConf >= 0.45 ? 'HIGH'
-    : quantumConf >= 0.1854 ? 'MEDIUM'
-    : 'LOW';
+    : quantumConf > alertThreshold ? 'ALERT'
+    : 'NORMAL';
   // feature_vector from /api/status has real live values (cpu_usage, memory_usage, etc.)
   const fv          = data?.feature_vector || {};
   const hasFvData   = Object.values(fv).some(v => v !== 0 && v != null);
@@ -650,8 +684,8 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
   const critCount   = summary.critical ?? 0;
   const highCount   = summary.high     ?? 0;
   const medCount    = summary.medium   ?? 0;
-  // Only count as a real alert if basis is mature — calibration noise is not an alert
-  const hasAlert    = basisMature && (data?._alerts?.has_anomaly ?? (fmin != null && fmin < 0.5));
+  // Only count as a real alert if basis is mature and quantum confidence crossed the threshold
+  const hasAlert    = basisMature && (data?._alerts?.has_anomaly ?? (quantumConf != null && quantumConf > alertThreshold));
   // Last collection time: parse from agent_status recent_logs if available
   const recentLogLine = (() => {
     const logs = data?.agent_status?.recent_logs || '';
@@ -785,7 +819,7 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ fontWeight: 700, fontSize: 13 }}>Quantum Behavioral Analysis — Live</span>
-                <Tooltip tip="3-qubit AmplitudeEmbedding on 8-dim behavioral latent z_t. SWAP Fidelity = F_sub = Σ|⟨ψ_t|ψ_k⟩|² over K=3 PCA subspace components. Low fidelity = outside normal subspace = anomalous. Directionality = alignment with complement subspace. Phase Coherence = |mean(exp(iφ))| over W=4 windows. Quantum Confidence = V3 interference fusion: α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir). Threshold = 0.1854 (p95 of normal training). NIST FIPS 203 ML-KEM Kyber768 PQC transform applied before encoding — behavioral norm cannot be reverse-engineered or replayed without private key.">
+                <Tooltip tip={`3-qubit AmplitudeEmbedding on 8-dim behavioral latent z_t. SWAP Fidelity = F_sub = Σ|⟨ψ_t|ψ_k⟩|² over K=3 PCA subspace components. Low fidelity = outside normal subspace = anomalous. Directionality = alignment with complement subspace. Phase Coherence = |mean(exp(iφ))| over W=4 windows. Quantum Confidence = V3 fusion: α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir). Alert threshold = ${alertThreshold.toFixed(4)} (per-identity p95 of normal training). NIST FIPS 203 ML-KEM Kyber768 PQC applied before encoding.`}>
                   <span style={{ width: 15, height: 15, borderRadius: '50%', background: 'var(--bg-raised)', border: '1px solid var(--border)', fontSize: 9, color: 'var(--text-faint)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'help' }}>?</span>
                 </Tooltip>
                 {!basisMature && (
@@ -795,7 +829,7 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
                 )}
               </div>
               <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 2 }}>
-                {basisMature ? 'Alert threshold: quantum confidence > 0.1854 (v3 p95)' : basisSize > 0 ? `Subspace building (${basisSize}/3) — alerts suppressed` : 'Go to Train tab to build behavioral baseline'}
+                {basisMature ? `Alert threshold: quantum confidence > ${alertThreshold.toFixed(4)} (per-identity p95)` : basisSize > 0 ? `Subspace building (${basisSize}/3) — alerts suppressed` : 'Waiting for TaaraWare data…'}
               </div>
             </div>
             {quantumConf != null ? (
@@ -845,7 +879,7 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
                   label: 'Q Confidence',
                   key: 'qc',
                   val: quantumConf,
-                  tip: 'V3 interference fusion: conf = α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir). Global weights: α=0.263, β=0.285, γ=0.451. Per-identity LR-fit when basis matures. Alert threshold = 0.1854 (p95 of normal training). Prec=0.689, Rec=0.942, F1=0.796, AUC=0.980 on CERT r4.2.',
+                  tip: `V3 interference fusion: conf = α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir). Global weights: α=0.263, β=0.285, γ=0.451. Per-identity LR-fit when basis matures. Alert threshold = ${alertThreshold.toFixed(4)} (per-identity p95). Prec=0.689, Rec=0.942, F1=0.796, AUC=0.980 on CERT r4.2.`,
                   color: qcColor,
                   fmt: v => v.toFixed(4),
                 },
@@ -894,7 +928,7 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
         <MetricTileWithTip label="Medium" value={medCount} color={medCount > 3 ? 'var(--blue)' : 'var(--text-faint)'}
           tip="Count of MEDIUM severity findings. Often best-practice violations or indirect risk. Each deducts 2 from health score." />
         <MetricTileWithTip label="Anomaly Alert" value={hasAlert ? 'ACTIVE' : 'None'} color={hasAlert ? 'var(--red)' : 'var(--green)'}
-          tip="Fires when quantum confidence exceeds 0.1854 (v3 p95 threshold on normal training windows). Formula: α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir). If Isolation Forest is also trained, both must agree. Detects T1078 Valid-Account credential theft — attackers who pass authentication but deviate from behavioral baseline." />
+          tip={`Fires when quantum confidence exceeds ${alertThreshold.toFixed(4)} (per-identity p95 of normal training). Formula: α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir). Detects T1078 Valid-Account credential theft — attackers who pass authentication but deviate from behavioral baseline.`} />
         <div className="card" style={{ padding: '14px 16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
             <div className="metric-label" style={{ margin: 0 }}>TaaraWare</div>
@@ -926,17 +960,17 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
             {[
-              { key: 'cpu_usage',              label: 'CPU',               unit: '%',   max: 100, warn: 80,  color: '#4a9eff' },
-              { key: 'memory_usage',           label: 'Memory',            unit: '%',   max: 100, warn: 85,  color: '#4a9eff' },
-              { key: 'disk_usage',             label: 'Disk',              unit: '%',   max: 100, warn: 90,  color: '#9b7dff' },
-              { key: 'proc_spawn_rate',        label: 'Process Spawns',    unit: '/min',max: 30,  warn: 15,  color: '#22cc66' },
-              { key: 'net_outbound_conn_rate', label: 'Outbound Conns',    unit: '',    max: 200, warn: 100, color: '#22cc66' },
-              { key: 'net_unique_dst_ips',     label: 'Unique Dest IPs',   unit: '',    max: 20,  warn: 10,  color: '#f5a623' },
-              { key: 'net_failed_conn_ratio',  label: 'Failed Conn Ratio', unit: '',    max: 1,   warn: 0.3, color: '#e94560' },
-              { key: 'failed_logins_1h',       label: 'Failed Logins',     unit: '/hr', max: 20,  warn: 5,   color: '#e94560' },
-              { key: 'causal_chain_novelty',   label: 'Causal Novelty',    unit: '',    max: 1,   warn: 0.6, color: '#e94560' },
-              { key: 'concealment_signal',     label: 'Concealment',       unit: '',    max: 1,   warn: 0.3, color: '#e94560' },
-            ].filter(s => fv[s.key] != null && fv[s.key] !== 0 || (s.key === 'failed_logins_1h' || s.key === 'concealment_signal')).map(s => {
+              { key: 'commands_per_minute',   label: 'Cmds / Min',         unit: '/m',  max: 20,  warn: 10,  color: '#4a9eff' },
+              { key: 'hardware_enum_count',   label: 'HW Enum Count ★',    unit: '',    max: 10,  warn: 3,   color: '#e94560' },
+              { key: 'malware_exec_pattern',  label: 'Malware Pattern ★',  unit: '',    max: 5,   warn: 1,   color: '#e94560' },
+              { key: 'persistence_attempt',   label: 'Persistence Attempt ★',unit: '', max: 3,   warn: 1,   color: '#e94560' },
+              { key: 'outbound_connections',  label: 'Outbound Conns',     unit: '',    max: 20,  warn: 8,   color: '#f5a623' },
+              { key: 'sensitive_path_access', label: 'Sensitive Access',   unit: '',    max: 1,   warn: 0.5, color: '#e94560' },
+              { key: 'unique_commands',       label: 'Unique Commands',    unit: '',    max: 30,  warn: 20,  color: '#22cc66' },
+              { key: 'session_duration',      label: 'Session Duration',   unit: 's',   max: 600, warn: 300, color: '#4a9eff' },
+              { key: 'inter_cmd_timing_std',  label: 'Timing Std Dev',     unit: 's',   max: 60,  warn: 5,   color: '#9b7dff' },
+              { key: 'data_volume_proxy',     label: 'Data Volume Proxy',  unit: '',    max: 20,  warn: 8,   color: '#f5a623' },
+            ].filter(s => fv[s.key] != null).map(s => {
               const val  = fv[s.key];
               const norm = Math.min(val / s.max, 1);
               const hot  = norm >= s.warn / s.max;
@@ -960,11 +994,87 @@ function DashboardSubTab({ hostname, demoMode, taarawareDeployed }) {
         </div>
       )}
 
-      {/* CPU sparkline if available */}
+      {/* Commands/min sparkline */}
       {cpuHistory.length > 1 && (
         <div className="card">
-          <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 8 }}>CPU Usage — Last {cpuHistory.length} readings</div>
+          <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 8 }}>Commands / Min — Last {cpuHistory.length} readings</div>
           <Sparkline points={cpuHistory} color="#4a9eff" height={40} />
+        </div>
+      )}
+
+      {/* Per-identity monitoring panel */}
+      {identities.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ fontWeight: 700, fontSize: 13 }}>Monitored Identities</div>
+            <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>{identities.length} identity{identities.length !== 1 ? ' profiles' : ' profile'} in quantum memory</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {identities.map(id => {
+              const qc   = id.quantum_confidence;
+              const thr  = id.threshold;
+              const anom = id.anomalous;
+              const col  = anom ? '#e94560' : !id.basis_mature ? 'var(--text-faint)' : qc != null && qc > thr * 0.8 ? '#f5a623' : '#22cc66';
+              return (
+                <div key={id.identity_id} style={{
+                  background: anom ? 'rgba(233,69,96,0.06)' : 'var(--bg-raised)',
+                  border: `1px solid ${anom ? 'rgba(233,69,96,0.25)' : 'var(--border)'}`,
+                  borderRadius: 8, padding: '10px 14px',
+                  display: 'flex', alignItems: 'center', gap: 14,
+                }}>
+                  {/* Status dot */}
+                  <div style={{
+                    width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
+                    background: col,
+                    boxShadow: anom ? `0 0 6px ${col}` : 'none',
+                    animation: anom ? 'pulse-red 1.5s infinite' : 'none',
+                  }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 12, fontFamily: 'monospace', color: anom ? '#e94560' : 'var(--text)' }}>
+                      {id.display_name}
+                      {anom && <span style={{ marginLeft: 8, fontSize: 9, background: 'rgba(233,69,96,0.15)', border: '1px solid rgba(233,69,96,0.3)', borderRadius: 3, padding: '1px 5px', color: '#e94560', fontWeight: 700, letterSpacing: 0.5 }}>ANOMALY</span>}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 2 }}>
+                      {id.basis_mature
+                        ? `${id.basis_size} normal sessions in memory · threshold ${id.threshold}`
+                        : id.basis_size > 0
+                        ? `Building baseline: ${id.basis_size}/3 sessions — monitoring passive`
+                        : 'No baseline yet — run training to establish normal profile'}
+                    </div>
+                  </div>
+                  {/* Quantum confidence */}
+                  {qc != null && id.basis_mature && (
+                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                      <div style={{ fontSize: 16, fontWeight: 700, fontFamily: 'monospace', color: col }}>{qc.toFixed(4)}</div>
+                      <div style={{ fontSize: 9, color: col }}>Q-conf · thr {thr}</div>
+                    </div>
+                  )}
+                  {/* Signal bars — shown when data exists */}
+                  {(id.swap_fidelity != null || id.q_directionality != null) && (
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      {[
+                        { label: 'SWAP', val: id.swap_fidelity, inverted: false },
+                        { label: 'Dir',  val: id.q_directionality, inverted: true },
+                        { label: 'Coh',  val: id.phase_coherence, inverted: true },
+                      ].filter(s => s.val != null).map(s => {
+                        const barColor = s.inverted
+                          ? (s.val >= 0.3 ? '#e94560' : s.val >= 0.15 ? '#f5a623' : '#22cc66')
+                          : (s.val >= 0.7 ? '#22cc66' : s.val >= 0.4 ? '#f5a623' : '#e94560');
+                        return (
+                          <div key={s.label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                            <div style={{ height: 28, width: 6, background: 'var(--bg-input)', borderRadius: 3, position: 'relative', overflow: 'hidden' }}>
+                              <div style={{ position: 'absolute', bottom: 0, width: '100%', height: `${Math.min(s.val, 1) * 100}%`, background: barColor, borderRadius: 3, transition: 'height 0.5s' }} />
+                            </div>
+                            <span style={{ fontSize: 7, color: 'var(--text-faint)' }}>{s.label}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -1129,9 +1239,6 @@ function AnalysisSubTab({ hostname, demoMode, analysisResults, setAnalysisResult
 function AnalysisResults({ results, hostname }) {
   const qr          = results.quantum_risk || {};
   const fmin        = qr.f_min ?? results.novelty?.f_min ?? results.f_min;
-  const novelty     = qr.quantum_novelty ?? results.novelty?.quantum_novelty ?? 0;
-  const riskScore   = qr.risk_score ?? 0;
-  const healthScore = results.model?.health_score ?? (100 - riskScore);
   const summary     = (results.security_data || {}).summary || {};
   const findings    = extractAllFindings(results);
   const critCount   = summary.critical ?? findings.filter(f => (f.severity || '').toLowerCase() === 'critical').length;
@@ -1139,6 +1246,20 @@ function AnalysisResults({ results, hostname }) {
   const medCount    = summary.medium   ?? findings.filter(f => (f.severity || '').toLowerCase() === 'medium').length;
   const lowCount    = summary.low      ?? findings.filter(f => (f.severity || '').toLowerCase() === 'low').length;
   const divergePct  = fmin != null ? ((1 - fmin) * 100).toFixed(1) : null;
+
+  // Risk score from findings only — weighted severity sum, capped at 100
+  const riskScore = Math.min(critCount * 25 + highCount * 15 + medCount * 5 + lowCount * 1, 100);
+
+  // Health from findings + fidelity penalty — same formula as dashboard
+  const computedHealth = (() => {
+    let s = 100;
+    s -= critCount * 18;
+    s -= highCount * 8;
+    s -= medCount  * 2;
+    if (fmin != null && fmin < 0.7) s -= Math.max(0, (0.7 - fmin)) * 60;
+    return Math.max(0, Math.min(100, s));
+  })();
+  const healthScore = results.model?.health_score ?? computedHealth;
 
   // Are findings severe but scores look good? Warn the user.
   const scoreMismatch = (critCount > 0 || highCount > 2) && healthScore >= 70;
@@ -1193,9 +1314,10 @@ function AnalysisResults({ results, hostname }) {
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.6 }}>
                 The server's current behavior is <strong style={{ color: fminColor(fmin) }}>{divergePct}% diverged</strong> from its trained secure baseline.
-                {fmin >= 0.7 && ' This is within the normal operating range.'}
-                {fmin >= 0.1854 && fmin < 0.45 && ' Behavioral drift detected — V3 quantum confidence above calibration threshold (0.1854).'}
-                {fmin >= 0.45 && ' High quantum confidence. The server is behaving significantly differently from its trained baseline.'}
+                {fmin >= 0.7 && ' Behavioral fidelity is high — this session matches the normal baseline closely.'}
+                {fmin >= 0.5 && fmin < 0.7 && ' Mild drift detected — behavior is moving away from baseline but has not crossed the alert threshold.'}
+                {fmin >= 0.3 && fmin < 0.5 && ' Significant drift — behavior is outside the safe zone. Review findings below.'}
+                {fmin < 0.3 && ' Critical divergence — behavioral fidelity is very low. This session looks nothing like established normal behavior.'}
               </div>
               {/* Zone bar */}
               <div style={{ marginTop: 8, height: 8, background: 'linear-gradient(90deg, #e94560 0%, #f5a623 30%, #4a9eff 55%, #22cc66 100%)', borderRadius: 4, position: 'relative' }}>
@@ -1464,26 +1586,28 @@ function TaaraWareDeployPanel({ hostname, demoMode, onDeployed }) {
 }
 
 // All 19 feature vectors with their descriptions and input variable names
+// 19-dim behavioral feature metadata — matches benchmark extract_19() and atomic_dna_collector.py exactly.
+// Features 8, 10, 13 were discovered via transformer attention analysis (not hand-engineered).
 const FEATURE_META = [
-  { key: 'cpu_usage',                 label: 'CPU Usage',              unit: '%',   input: 'cpu_percent',       desc: 'Average CPU utilisation across all cores. High sustained values (>80%) can indicate crypto-mining, runaway processes, or active exploitation.' },
-  { key: 'memory_usage',              label: 'Memory Usage',           unit: '%',   input: 'mem_percent',       desc: 'RAM utilisation (psutil.virtual_memory.percent). Steady growth without matching workload is a memory-leak or exfiltration buffer indicator.' },
-  { key: 'disk_usage',                label: 'Disk Usage',             unit: '%',   input: 'disk_percent',      desc: 'Root filesystem utilisation. Rapid growth can signal log flooding, data staging for exfiltration, or ransomware encryption.' },
-  { key: 'proc_spawn_rate',           label: 'Process Spawn Rate',     unit: '/m',  input: 'proc_spawn_rate',   desc: 'Number of new processes spawned per minute. Spikes indicate script execution, lateral movement, or automated attack tooling.' },
-  { key: 'proc_root_ratio',           label: 'Root Process Ratio',     unit: '',    input: 'proc_root_ratio',   desc: 'Fraction of running processes owned by root. Increasing ratio may indicate privilege escalation or rootkit activity.' },
-  { key: 'proc_cmd_entropy',          label: 'Command Entropy',        unit: 'bits',input: 'proc_cmd_entropy',  desc: 'Shannon entropy of process command strings. Anomalously high entropy suggests obfuscated or encoded payloads.' },
-  { key: 'net_outbound_conn_rate',    label: 'Outbound Connections',   unit: '',    input: 'net_conn_rate',     desc: 'Count of active outbound TCP connections. High values may indicate C2 beaconing, scanning, or data exfiltration.' },
-  { key: 'net_unique_dst_ips',        label: 'Unique Dest IPs',        unit: '',    input: 'net_dst_ips',       desc: 'Number of distinct destination IPs contacted. A sudden increase signals port scanning or botnet participation.' },
-  { key: 'net_unique_dst_ports',      label: 'Unique Dest Ports',      unit: '',    input: 'net_dst_ports',     desc: 'Distinct destination ports. High diversity suggests network reconnaissance or C2 traffic randomisation.' },
-  { key: 'net_port_entropy',          label: 'Port Entropy',           unit: 'bits',input: 'net_port_entropy',  desc: 'Shannon entropy over destination port distribution. Random ports (high entropy) suggest tunnelling or evasion.' },
-  { key: 'net_failed_conn_ratio',     label: 'Failed Conn Ratio',      unit: '',    input: 'failed_conn_ratio', desc: 'Fraction of connection attempts that failed. Persistently high values indicate scanning, blocked C2, or misconfiguration.' },
-  { key: 'failed_logins_1h',          label: 'Failed Logins (1h)',     unit: '',    input: 'failed_logins',     desc: 'SSH/PAM failed authentication attempts in the past hour (from /var/log/secure or auth.log). >10 suggests brute-force.' },
-  { key: 'new_processes_1h',          label: 'New Processes (1h)',     unit: '',    input: 'new_procs',         desc: 'Count of new process executions in past hour. Unexpected spikes in off-hours are a key lateral movement indicator.' },
-  { key: 'suspicious_connections',    label: 'Suspicious Connections', unit: '',    input: 'suspicious_conn',   desc: 'Heuristic count: connections to non-standard ports, TOR exits, or IPs flagged by TaaraWare threat feeds.' },
-  { key: 'privilege_escalations',     label: 'Privilege Escalations',  unit: '',    input: 'priv_esc',          desc: 'sudo/su events from auth.log in past hour. Non-zero in off-hours is a critical signal for unauthorized access.' },
-  { key: 'temporal_rhythm_deviation', label: 'Temporal Rhythm Dev.',   unit: '',    input: 'rhythm_dev',        desc: 'Deviation from the trained timing pattern of process launches (AtomicDNACollector). Attackers break normal rhythms.' },
-  { key: 'causal_chain_novelty',      label: 'Causal Chain Novelty',   unit: '',    input: 'causal_novelty',    desc: 'How novel the parent→child process chains are vs. trained baseline. New chains = unknown execution paths = potential threat.' },
-  { key: 'concealment_signal',        label: 'Concealment Signal',     unit: '',    input: 'concealment_sig',   desc: 'Composite signal: hidden file ratio, exec from /tmp, suspicious user-agent patterns. Non-zero means something is actively hiding.' },
-  { key: 'proc_cmd_novelty',          label: 'Cmd Novelty',            unit: '',    input: 'cmd_novelty',       desc: 'Fraction of process command lines not seen during normal training. Novel commands in production indicate new code execution — a key indicator for T1078.' },
+  { key: 'session_duration',       label: 'Session Duration',       unit: 's',    desc: 'Seconds since session start. Attackers run fast scripted sessions (~15–300s). Legitimate users stay minutes to hours. Transformer attention: DUR_>5m is the strongest normal signal (gap=0.189).' },
+  { key: 'commands_per_minute',    label: 'Commands / Min',         unit: '/m',   desc: 'Commands issued per minute. Attackers burst rapid-fire (uname, id, cat /etc/passwd in rapid sequence). Transformer token CPM_BURST is exclusive to attack sessions.' },
+  { key: 'inter_cmd_timing_std',   label: 'Timing Std Dev',         unit: 's',    desc: 'Standard deviation of inter-command gaps. Near-zero = scripted (attacker). High = human typing pauses. Transformer token ICI_HUMAN is exclusive to legitimate sessions.' },
+  { key: 'session_idle_ratio',     label: 'Session Idle Ratio',     unit: '',     desc: 'Fraction of session with no commands. Attackers run in exec-mode — 99.6% have zero idle time. Legitimate users have natural pauses between commands.' },
+  { key: 'unique_commands',        label: 'Unique Commands',        unit: '',     desc: 'Count of distinct command names in session. Attackers enumerate broadly (uname, id, ls, ps, cat, netstat…). Legitimate users repeat known commands.' },
+  { key: 'command_entropy',        label: 'Command Entropy',        unit: 'bits', desc: 'Shannon entropy over command frequencies. Attacker command diversity is high (H≈3.7 bits). Legit users repeat same commands (H≈2.8 bits). Transformer token DIVERSITY_LOW normal signal.' },
+  { key: 'shell_history_delta',    label: 'Admin Cmd Count',        unit: '',     desc: 'Count of admin commands (apt, vim, systemctl, scp, docker…). Legitimate admins run these; attackers rarely do in honeypot data. Proxy for shell_history writes.' },
+  { key: 'sensitive_path_access',  label: 'Sensitive Path Access',  unit: '',     desc: 'Binary: 1 if session accessed .ssh/, authorized_keys, /etc/shadow, id_rsa, or /root. Documented in 4000+ Cowrie sessions: SSH key injection is first persistence step.' },
+  { key: 'hardware_enum_count',    label: 'Hardware Enum Count',    unit: '',     desc: '★ Transformer-discovered. Count of uname/free/top/w/lscpu/lspci/df/uptime/nproc calls. Present in 1087–1092/1163 attack sessions. Attackers profile hardware for cryptominer value before payload drop. Gap: 9.4M σ from normal.' },
+  { key: 'outbound_connections',   label: 'Outbound Connections',   unit: '',     desc: 'Active established outbound TCP connections. Attackers open wget/curl C2 channels and reverse shells. Transformer token OUTBOUND_CONN present in 923/1163 attack sessions.' },
+  { key: 'persistence_attempt',    label: 'Persistence Attempt',    unit: '',     desc: '★ Transformer-discovered. Count of crontab commands. Present in 1087/1163 attack sessions — attackers always install cron persistence. Zero in legitimate admin sessions in training data.' },
+  { key: 'malware_exec_pattern',   label: 'Malware Exec Pattern',   unit: '',     desc: 'Count of wget/curl/tftp/nc/chmod/nohup/busybox/mknod/dd calls. Documented malware chain: wget dropper → chmod +x → nohup execute. Each command in cluster is an independent attack signal.' },
+  { key: 'process_spawn_count',    label: 'Process Spawn Count',    unit: '',     desc: 'Count of dd/busybox/sh/bash/perl/python direct launches. Attackers spawn interpreters and disk tools (dd for wipe, busybox for IoT). Transformer tokens ATCK_DD and ATCK_BUSYBOX.' },
+  { key: 'network_device_shell',   label: 'Network Device Shell',   unit: '',     desc: '★ Transformer-discovered. Count of version/shell/enable/terminal/configure commands — router/switch/IoT CLI syntax. Completely absent from Linux server normal data. Cowrie captures IoT exploitation attempts.' },
+  { key: 'data_volume_proxy',      label: 'Data Volume Proxy',      unit: '',     desc: 'Outbound connections + download-tool count (wget/curl/tftp). Proxy for data exfiltration volume. Combines C2 channel count with download activity into one signal.' },
+  { key: 'time_sin_hour',          label: 'Hour sin(2π·h/24)',       unit: '',     desc: 'Sinusoidal hour-of-day encoding. Maps cyclic time onto a circle so hour 23 and hour 1 are adjacent, not distant. Same mathematical approach as transformer positional encoding.' },
+  { key: 'time_cos_hour',          label: 'Hour cos(2π·h/24)',       unit: '',     desc: 'Cosine hour-of-day component. Together with sin(hour), encodes current hour as a point on the unit circle — preserving cyclic distance.' },
+  { key: 'time_sin_dow',           label: 'DoW sin(2π·d/7)',         unit: '',     desc: 'Sinusoidal day-of-week encoding. Captures weekly rhythm — attacks more common on weekends/off-hours. Encoded as circular so Saturday and Sunday are adjacent.' },
+  { key: 'time_cos_dow',           label: 'DoW cos(2π·d/7)',         unit: '',     desc: 'Cosine day-of-week component. With sin(dow), fully encodes day-of-week as a unit circle point.' },
 ];
 
 // ── Pipeline step visual component ────────────────────────────────────────────
@@ -1531,27 +1655,27 @@ function FeatureMappingModal({ fv, onClose }) {
     else setErr('Incorrect password');
   }
 
-  // Categorise features for the grouped view
+  // Categorise features for the grouped view — matches benchmark extract_19() groups
   const CATEGORIES = [
-    { label: 'System Resources',   color: '#4a9eff', keys: ['cpu_usage','memory_usage','disk_usage'] },
-    { label: 'Network Activity',   color: '#22cc66', keys: ['net_outbound_conn_rate','net_unique_dst_ips','net_unique_dst_ports','net_port_entropy','net_failed_conn_ratio','suspicious_connections'] },
-    { label: 'Process Behaviour',  color: '#f5a623', keys: ['proc_spawn_rate','proc_root_ratio','proc_cmd_entropy','new_processes_1h','privilege_escalations','temporal_rhythm_deviation','causal_chain_novelty'] },
-    { label: 'Security Signals',   color: '#e94560', keys: ['failed_logins_1h','concealment_signal'] },
+    { label: 'Session Timing',      color: '#4a9eff', keys: ['session_duration','commands_per_minute','inter_cmd_timing_std','session_idle_ratio'] },
+    { label: 'Command Behaviour',   color: '#f5a623', keys: ['unique_commands','command_entropy','shell_history_delta','hardware_enum_count','persistence_attempt','process_spawn_count','network_device_shell'] },
+    { label: 'Attack Signals',      color: '#e94560', keys: ['sensitive_path_access','malware_exec_pattern','outbound_connections','data_volume_proxy'] },
+    { label: 'Temporal Encoding',   color: '#9b7dff', keys: ['time_sin_hour','time_cos_hour','time_sin_dow','time_cos_dow'] },
   ];
 
   const PIPELINE_STEPS = [
-    { num: '①', title: 'Raw Collection', subtitle: '19 signals', detail: 'psutil + auth.log', color: '#4a9eff',
-      explain: 'TaaraWare agent reads 19 live signals from the server every 30 seconds — CPU, memory, disk, network counters, process list, login logs, timing patterns, and 2 advanced behavioural signals (temporal rhythm deviation, causal chain novelty). These are the raw numbers that describe what the server is doing right now.' },
-    { num: '②', title: 'Normalise', subtitle: 'MinMaxScaler', detail: 'x̂ = (x−min)/(max−min)', color: '#9b7dff',
-      explain: 'Each raw value is scaled to [0, 1] using the min/max ranges learned during training. This means CPU 45% and network 2 MB/s are on the same scale — the model can compare apples to apples. The scaler is saved in models/dna_scaler.json.' },
-    { num: '③', title: 'Autoencoder', subtitle: '19→8→19', detail: 'bottleneck compress', color: '#f5a623',
-      explain: 'A deep neural network (19→64→8→64→19 architecture, Tanh bottleneck) compresses the 19 signals down to an 8-dimensional "behavioural DNA fingerprint". The network learned what normal server behaviour looks like during training. If the current state doesn\'t compress and reconstruct well, it\'s a sign something unusual is happening.' },
+    { num: '①', title: 'Raw Collection', subtitle: '19 signals', detail: '.bash_history + ss', color: '#4a9eff',
+      explain: 'TAARA reads ~/.bash_history from the monitored server every 30 seconds and counts live outbound connections via ss. It accumulates the full session command log and derives 19 behavioral features — timing patterns, command diversity, attack-specific clusters (hardware enum, malware tools, persistence). Features were validated by transformer attention analysis on 2,314 real sessions (elastic_auth + Cowrie).' },
+    { num: '②', title: 'Normalise', subtitle: 'StandardScaler', detail: 'fitted on normal sessions', color: '#9b7dff',
+      explain: 'Each raw value is scaled using the mean and std of normal training sessions. The scaler is fitted once on legitimate user sessions and saved in models/dna_scaler.json. Attackers produce values far outside the normal range on features like hardware_enum_count (9.4M σ gap) and malware_exec_pattern.' },
+    { num: '③', title: 'Autoencoder', subtitle: '19→64→8→64→19', detail: 'Tanh bottleneck', color: '#f5a623',
+      explain: 'A deep neural network (19→64→8→64→19 architecture, Tanh bottleneck) compresses the 19 behavioral signals to an 8-dimensional latent fingerprint. PCA on real session data confirms 8 dims explain 97.1% of normal behavioral variance — matching the 3-qubit quantum hardware constraint (2³=8 amplitudes).' },
     { num: '④', title: 'Qubit Encoding', subtitle: '3 qubits', detail: 'AmplitudeEmbedding (8→3q)', color: '#22cc66',
-      explain: 'The 8-dimensional latent vector is encoded into 3 qubits using PennyLane AmplitudeEmbedding (2³=8). This maps the full behavioural fingerprint into a quantum state |ψ_t⟩ that captures complex correlations between all 8 dimensions simultaneously — something classical vectors cannot express.' },
-    { num: '⑤', title: 'V3 Fusion', subtitle: 'SWAP+Dir+Coh', detail: 'threshold: 0.1854', color: '#e94560',
-      explain: 'Three quantum signals are fused: SWAP Fidelity (similarity to normal subspace), Directionality (deviation angle), and Phase Coherence (temporal stability). The V3 formula conf = α·swap + β·dir + γ·coh·√(swap·dir) weights them optimally. Threshold of 0.1854 (p95 of training distribution) determines alert vs. normal.' },
-    { num: '⑥', title: 'PQC Protect', subtitle: 'Kyber768', detail: 'NIST FIPS 203', color: '#4a9eff',
-      explain: 'Before the feature vector is sent from the agent to the TAARA server, it is offset using a Kyber768 (ML-KEM) shared secret. Kyber768 is post-quantum — even a future quantum computer cannot break it. This protects the behavioral data from interception in transit.' },
+      explain: 'The 8-dimensional latent vector is encoded into 3 qubits using PennyLane AmplitudeEmbedding (2³=8 amplitudes). Ring CNOT entanglement captures behavioral correlations between all 8 dimensions simultaneously — an attacker who matches individual feature values but has a different correlation structure still produces a distinct quantum state.' },
+    { num: '⑤', title: 'V8 Fusion', subtitle: 'SWAP+Dir+Coh', detail: 'conf = α·s + β·d + γ·c·√(sd)', color: '#e94560',
+      explain: 'Three quantum signals fused: SWAP Fidelity (is this session in the user\'s normal subspace?), Directionality (is drift pointing into the anomalous complement?), Phase Coherence (is the drift sustained across 4 windows?). Per-identity α,β,γ weights fitted on validation split. Benchmark result: normal_mean=0.31, attack_mean=0.62, gap=+0.30. TPR=96.9%, FPR=9.3% on 1163 real Cowrie attacker sessions.' },
+    { num: '⑥', title: 'PQC Protect', subtitle: 'Kyber768 + HMAC', detail: 'NIST FIPS 203', color: '#4a9eff',
+      explain: 'Each feature vector is HMAC-signed with a key derived from the Kyber768 shared secret. The SSH host key is pinned on first connection — any MITM attempt is rejected. taara_state.json (the behavioral baseline) is AES-256-GCM encrypted and HMAC-verified on every load — tampering fires an immediate alert.' },
   ];
 
   return (
@@ -1826,27 +1950,26 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
   const fv   = status?.feature_vector || {};
   const nov  = status?.novelty || {};
   const basisSize = nov.basis_size ?? 0;
-  // Basis is "mature" if: 3+ raw vectors collected, OR quantum signals are already live
-  // (pretrained model seeds the PCA subspace immediately — no raw vectors needed)
-  const quantumSignalsLive = (nov.quantum_confidence != null) || (nov.swap_fidelity != null);
-  const basisMature = basisSize >= 3 || quantumSignalsLive;
+  // Basis is mature only when real signals exist from actual live data
+  const basisMature = basisSize >= 3 || (nov.quantum_confidence != null && nov.swap_fidelity != null);
   const rawFmin = nov.f_min ?? status?.f_min;
   const fmin = rawFmin ?? null;
-  // Always show live V3 quantum signals — suppress alerts (not display) when basis not mature
   const twSwapFidelity    = nov.swap_fidelity    ?? null;
   const twQDirectionality = nov.q_directionality ?? null;
   const twPhaseCoherence  = nov.phase_coherence  ?? null;
   const twQuantumConf     = nov.quantum_confidence ?? null;
+  // Per-identity threshold from server — calibrated on real training data
+  const twThreshold = nov.threshold ?? 0.4382;
   const twQcColor = twQuantumConf == null ? 'var(--text-faint)'
     : twQuantumConf >= 0.75 ? '#e94560'
     : twQuantumConf >= 0.45 ? '#f5a623'
-    : twQuantumConf >= 0.1854 ? '#4a9eff'
+    : twQuantumConf > twThreshold ? '#4a9eff'
     : '#22cc66';
   const twQcLabel = twQuantumConf == null ? '—'
     : twQuantumConf >= 0.75 ? 'CRITICAL'
     : twQuantumConf >= 0.45 ? 'HIGH'
-    : twQuantumConf >= 0.1854 ? 'MEDIUM'
-    : 'LOW';
+    : twQuantumConf > twThreshold ? 'ALERT'
+    : 'NORMAL';
   // all-zeros means not yet collected — only show as hasFv when at least one non-zero value
   const hasFv = Object.keys(fv).filter(k => !['anomaly_score','is_anomaly'].includes(k)).some(k => fv[k] !== 0 && fv[k] != null);
   // Pull last collection time from recent agent log line
@@ -1969,13 +2092,13 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
               <span style={{ fontSize: 9, color: 'var(--text-faint)' }}>Normal (conf low)</span>
               <span style={{ fontSize: 9, color: 'var(--text-faint)', fontFamily: 'monospace' }}>
-                threshold = 0.1854 · conf = {twQuantumConf != null ? twQuantumConf.toFixed(4) : '—'}</span>
+                threshold = {twThreshold.toFixed(4)} · conf = {twQuantumConf != null ? twQuantumConf.toFixed(4) : '—'}</span>
               <span style={{ fontSize: 9, color: 'var(--text-faint)' }}>Anomalous (conf high)</span>
             </div>
             <div style={{ height: 10, background: 'linear-gradient(90deg, #22cc66 0%, #4a9eff 30%, #f5a623 55%, #e94560 100%)', borderRadius: 5, position: 'relative' }}>
-              {/* Threshold marker at 0.1854 */}
+              {/* Threshold marker — dynamic per-identity */}
               <div style={{
-                position: 'absolute', left: '18.54%', top: 0, bottom: 0,
+                position: 'absolute', left: `${twThreshold * 100}%`, top: 0, bottom: 0,
                 width: 1.5, background: '#f5a623', opacity: 0.7,
               }} />
               {twQuantumConf != null && (
@@ -2046,7 +2169,6 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
                       <span style={{ fontSize: 9, fontFamily: 'monospace', color: dotColor, fontWeight: 700 }}>F{i + 1}</span>
                       {isHigh && <span style={{ fontSize: 8, color: 'var(--red)' }}>⚠</span>}
                     </div>
-                    {/* Blurred value bar */}
                     <div style={{ height: 6, background: 'var(--bg-input)', borderRadius: 3, overflow: 'hidden' }}>
                       <div style={{
                         height: '100%', width: `${norm * 100}%`, borderRadius: 3,
@@ -2055,7 +2177,6 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
                         boxShadow: isHigh ? `0 0 4px #e9456088` : 'none',
                       }} />
                     </div>
-                    {/* Obscured numeric value */}
                     <div style={{ filter: 'blur(3.5px)', fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: val != null ? 'var(--text)' : 'var(--text-faint)', userSelect: 'none', letterSpacing: 0.5 }}>
                       {val != null ? (typeof val === 'number' ? val.toFixed(2) : String(val)) : '—'}
                     </div>
@@ -2108,6 +2229,258 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
           {revoking ? <><span className="spinner" /> Revoking…</> : '⏻ Revoke TaaraWare'}
         </button>
       </div>
+    </div>
+  );
+}
+
+// ── TAARA Architecture Flowchart ──────────────────────────────────────────────
+function TaaraArchFlowchart() {
+  const col = {
+    server:   '#4a9eff',
+    encrypt:  '#9b7dff',
+    classical:'#22cc66',
+    quantum:  '#f5a623',
+    alert:    '#e94560',
+    action:   '#4a9eff',
+  };
+
+  // Each row of the diagram
+  const rows = [
+    {
+      id: 'row-server',
+      nodes: [
+        { id: 'server', label: 'Remote Server', sub: 'Any SSH target', color: col.server, icon: '⬡' },
+        { id: 'taaraware', label: 'TaaraWare Agent', sub: 'Deployed on server\nCollects behaviour every 30s', color: col.server, icon: 'TW' },
+      ],
+      arrow: '→',
+      note: 'Agent runs on the server, never phones home in plaintext',
+    },
+    {
+      id: 'row-encrypt',
+      nodes: [
+        { id: 'pqc', label: 'ML-KEM Kyber768', sub: 'NIST FIPS 203 PQC\nPost-quantum encrypted tunnel', color: col.encrypt, icon: 'PQC' },
+      ],
+      arrow: '↓',
+      note: 'All data encrypted with post-quantum key — unreadable to classical and quantum adversaries',
+    },
+    {
+      id: 'row-classical',
+      nodes: [
+        { id: 'ae', label: 'BehavioralAE', sub: '19-dim → 8-dim\nlatent compression', color: col.classical, icon: 'AE' },
+        { id: 'iforest', label: 'IsolationForest', sub: 'Classical novelty\ndetector', color: col.classical, icon: 'IF' },
+      ],
+      arrow: '→',
+      note: 'Classical pipeline: compress raw behaviour into latent DNA, flag statistical outliers',
+    },
+    {
+      id: 'row-quantum',
+      nodes: [
+        { id: 'swap', label: 'SWAP Test', sub: 'Fidelity vs trained\nnormal subspace', color: col.quantum, icon: 'Q' },
+        { id: 'dir', label: 'Directionality', sub: 'Phase angle\ndivergence', color: col.quantum, icon: 'D' },
+        { id: 'coh', label: 'Phase Coherence', sub: 'Sustained drift\ndetection', color: col.quantum, icon: 'C' },
+        { id: 'qc', label: 'Quantum Confidence', sub: 'α·S + β·D + γ·C·√(S·D)', color: col.quantum, icon: 'Qc' },
+      ],
+      arrow: '→',
+      note: 'Quantum layer: 3-qubit state, coherence-weighted fusion — catches correlated attacks classical misses',
+    },
+    {
+      id: 'row-decision',
+      nodes: [
+        { id: 'threshold', label: 'Per-Identity Threshold', sub: 'p95 calibrated\nper server identity', color: col.alert, icon: 'T' },
+        { id: 'alert', label: 'Alert', sub: 'Fired when confidence\nexceeds threshold', color: col.alert, icon: '⚠' },
+        { id: 'bandit', label: 'Action Bandit', sub: 'UCB-weighted action\nranking', color: col.action, icon: 'B' },
+        { id: 'rollback', label: 'Autonomous + Rollback', sub: 'Pre-approved actions\nwith undo guarantee', color: col.action, icon: 'R' },
+      ],
+      arrow: '→',
+      note: 'Every action is reversible before execution — rollback pre-computed',
+    },
+  ];
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="section-title" style={{ marginBottom: 4 }}>How TAARA Works</div>
+      <div style={{ fontSize: 11, color: 'var(--text-faint)', marginBottom: 20 }}>
+        End-to-end architecture — from raw server behaviour to quantum-verified threat decision.
+      </div>
+
+      {rows.map((row, ri) => (
+        <div key={row.id}>
+          {/* Node row */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap', marginBottom: 4 }}>
+            {row.nodes.map((node, ni) => (
+              <div key={node.id} style={{ display: 'flex', alignItems: 'center' }}>
+                <div style={{
+                  padding: '10px 14px', borderRadius: 8, textAlign: 'center', minWidth: 100,
+                  background: node.color + '12',
+                  border: `1.5px solid ${node.color}44`,
+                  transition: 'box-shadow 0.2s',
+                }}>
+                  <div style={{
+                    width: 28, height: 28, borderRadius: '50%', margin: '0 auto 5px',
+                    background: node.color + '22', border: `1.5px solid ${node.color}88`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: node.icon.length > 2 ? 8 : 13, fontWeight: 800,
+                    color: node.color,
+                  }}>
+                    {node.icon}
+                  </div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', lineHeight: 1.2 }}>
+                    {node.label}
+                  </div>
+                  <div style={{ fontSize: 9, color: 'var(--text-faint)', marginTop: 3, lineHeight: 1.4, whiteSpace: 'pre-line' }}>
+                    {node.sub}
+                  </div>
+                </div>
+                {ni < row.nodes.length - 1 && (
+                  <div style={{ width: 28, textAlign: 'center', fontSize: 14, color: node.color + 'aa', flexShrink: 0 }}>
+                    {row.arrow}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          {/* Row note */}
+          <div style={{
+            fontSize: 10, color: 'var(--text-faint)', fontStyle: 'italic',
+            paddingLeft: 6, marginBottom: 6,
+            borderLeft: `2px solid ${row.nodes[0].color}44`,
+          }}>
+            {row.note}
+          </div>
+          {/* Down arrow between rows */}
+          {ri < rows.length - 1 && (
+            <div style={{ textAlign: 'center', fontSize: 18, color: 'var(--border)', marginBottom: 4, lineHeight: 1 }}>
+              ↓
+            </div>
+          )}
+        </div>
+      ))}
+
+      {/* Encryption callout */}
+      <div style={{
+        marginTop: 18, padding: '10px 14px', borderRadius: 8,
+        background: 'rgba(155,125,255,0.06)', border: '1px solid rgba(155,125,255,0.2)',
+        display: 'flex', alignItems: 'flex-start', gap: 10,
+      }}>
+        <div style={{ fontSize: 18, color: '#9b7dff', flexShrink: 0 }}>🔒</div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#9b7dff', marginBottom: 3 }}>
+            Post-Quantum Encrypted End-to-End
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.6 }}>
+            TaaraWare encrypts every telemetry packet with <strong>ML-KEM Kyber768</strong> (NIST FIPS 203) before it leaves the server.
+            The behavioral norm stored in the quantum subspace cannot be reverse-engineered or replayed — even with a quantum computer.
+            The CommandCenter decrypts only locally. No plaintext behavioural data ever transits the network.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Documentation button — password gated ─────────────────────────────────────
+function TaaraDocsButton() {
+  const [showPrompt, setShowPrompt] = useState(false);
+  const [pw, setPw]                 = useState('');
+  const [error, setError]           = useState('');
+  const inputRef                    = useRef(null);
+
+  function handleOpen() {
+    setShowPrompt(true);
+    setError('');
+    setPw('');
+    setTimeout(() => inputRef.current?.focus(), 80);
+  }
+
+  function handleSubmit(e) {
+    e && e.preventDefault();
+    if (pw === 'taara2026') {
+      setShowPrompt(false);
+      setPw('');
+      setError('');
+      // Open PDF — Electron resolves relative path from PROJECT_ROOT
+      const pdfPath = 'taara.pdf';
+      if (window.taara?.openPDF) {
+        window.taara.openPDF(pdfPath);
+      } else {
+        window.open(pdfPath, '_blank');
+      }
+    } else {
+      setError('Incorrect password.');
+      setPw('');
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 16, textAlign: 'center' }}>
+      <button
+        onClick={handleOpen}
+        style={{
+          background: 'linear-gradient(135deg, #1a1a2e, #16213e)',
+          border: '1.5px solid rgba(155,125,255,0.4)',
+          borderRadius: 8, color: '#9b7dff', cursor: 'pointer',
+          fontSize: 13, fontWeight: 700, padding: '11px 28px',
+          letterSpacing: 0.3, transition: 'all 0.2s',
+          display: 'inline-flex', alignItems: 'center', gap: 8,
+        }}
+        onMouseEnter={e => e.currentTarget.style.borderColor = 'rgba(155,125,255,0.8)'}
+        onMouseLeave={e => e.currentTarget.style.borderColor = 'rgba(155,125,255,0.4)'}
+      >
+        🔒 Read the Documentation
+      </button>
+
+      {showPrompt && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 9999,
+        }}
+        onClick={e => { if (e.target === e.currentTarget) { setShowPrompt(false); setPw(''); setError(''); } }}
+        >
+          <div style={{
+            background: 'var(--bg-surface)', borderRadius: 12, padding: '28px 32px',
+            border: '1px solid rgba(155,125,255,0.3)',
+            boxShadow: '0 8px 40px rgba(0,0,0,0.5)',
+            minWidth: 300, textAlign: 'left',
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6, color: '#9b7dff' }}>
+              Documentation Access
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 18 }}>
+              Enter the documentation password to continue.
+            </div>
+            <form onSubmit={handleSubmit}>
+              <input
+                ref={inputRef}
+                type="password"
+                value={pw}
+                onChange={e => { setPw(e.target.value); setError(''); }}
+                placeholder="Password"
+                style={{
+                  width: '100%', padding: '9px 12px', borderRadius: 6,
+                  background: 'var(--bg-input)', border: `1px solid ${error ? '#e94560' : 'var(--border)'}`,
+                  color: 'var(--text)', fontSize: 13, outline: 'none',
+                  boxSizing: 'border-box', marginBottom: error ? 6 : 14,
+                }}
+              />
+              {error && (
+                <div style={{ fontSize: 11, color: '#e94560', marginBottom: 12 }}>{error}</div>
+              )}
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                <button type="button" onClick={() => { setShowPrompt(false); setPw(''); setError(''); }}
+                  style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-faint)', cursor: 'pointer', fontSize: 12, padding: '7px 16px' }}>
+                  Cancel
+                </button>
+                <button type="submit"
+                  style={{ background: '#9b7dff22', border: '1px solid #9b7dff66', borderRadius: 6, color: '#9b7dff', cursor: 'pointer', fontSize: 12, fontWeight: 700, padding: '7px 20px' }}>
+                  Open
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2587,7 +2960,11 @@ function AgentSubTab() {
                   <span style={{ fontSize: 12, fontWeight: 700, color: rec.pre_approved ? 'var(--green)' : 'var(--blue)' }}>{rec.action_type.replace(/_/g, ' ')}</span>
                   {rec.pre_approved && <span style={{ fontSize: 8, background: 'rgba(34,204,102,0.2)', color: 'var(--green)', borderRadius: 3, padding: '1px 5px', fontWeight: 700 }}>PRE-APPROVED</span>}
                   <span style={{ fontSize: 9, color: 'var(--text-faint)', marginLeft: 'auto' }}>
-                    UCB {rec.ucb_score?.toFixed(2)} · {rec.times_seen > 0 ? `${rec.times_seen}× seen · ${Math.round((rec.success_rate || 0) * 100)}% success` : 'unexplored'}
+                    {rec.times_seen > 0
+                      ? rec.pre_approved
+                        ? `${Math.round((rec.success_rate || 0) * rec.times_seen)} of ${rec.times_seen} approvals in this context`
+                        : `${rec.times_seen}× seen · ${Math.round((rec.success_rate || 0) * 100)}% success`
+                      : 'unexplored'}
                   </span>
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{rec.description}</div>
@@ -2677,29 +3054,85 @@ function AgentSubTab() {
         )}
       </div>
 
-      {/* Audit log */}
-      {auditLog.length > 0 && (
-        <div className="card">
-          <div className="section-title" style={{ marginBottom: 10 }}>Action Log</div>
-          <table className="data-table">
-            <thead><tr><th>Command</th><th>Source</th><th>Result</th><th>Time</th></tr></thead>
-            <tbody>
-              {auditLog.slice(0, 10).map((a, i) => (
-                <tr key={i}>
-                  <td><code style={{ fontSize: 10 }}>{a.command || a.action || '—'}</code></td>
-                  <td style={{ fontSize: 11 }}>{a.source || '—'}</td>
-                  <td><span style={{ color: (a.success || a.exit_code === 0) ? 'var(--green)' : 'var(--red)' }}>
-                    {(a.success || a.exit_code === 0) ? '✓' : '✗'}
-                  </span></td>
-                  <td style={{ fontSize: 10, color: 'var(--text-faint)' }}>
-                    {a.timestamp ? new Date(a.timestamp * 1000).toLocaleTimeString() : '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Audit trail — plain-English feed */}
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div className="section-title">Agent Audit Trail</div>
+          <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>every action is logged · rollback available within 15 min</span>
         </div>
-      )}
+        {auditLog.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--text-faint)', padding: '10px 0' }}>
+            No actions taken yet. Approve a bandit recommendation or run a manual command to see the audit trail.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {auditLog.slice(0, 10).map((a, i) => {
+              const ok = a.success || a.exit_code === 0;
+              const ts = a.timestamp
+                ? new Date(a.timestamp * 1000).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+                : a.datetime
+                ? new Date(a.datetime).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+                : null;
+              // Build plain-English summary
+              const cmd = a.command || a.action || '';
+              const src = a.source || a.category || '';
+              let summary = a.details || a.description || '';
+              if (!summary) {
+                if (cmd.startsWith('fail2ban') || (src === 'block_ip') || cmd.includes('ban'))
+                  summary = `Blocked IP ${a.target || cmd.split(' ').slice(-1)[0]} via fail2ban`;
+                else if (cmd.startsWith('kill') || cmd.startsWith('pkill'))
+                  summary = `Killed process ${a.target || cmd.split(' ').slice(-1)[0]}`;
+                else if (cmd.startsWith('ufw') || cmd.includes('iptables'))
+                  summary = `Applied firewall rule`;
+                else if (cmd.includes('systemctl'))
+                  summary = `Service control: ${cmd.replace('systemctl ', '')}`;
+                else if (src === 'mark_normal')
+                  summary = `Marked anomaly as normal behavior`;
+                else if (src === 'ignore_alert')
+                  summary = `Suppressed alert pattern — TAARA will not flag this again`;
+                else if (cmd)
+                  summary = cmd.length > 60 ? cmd.slice(0, 57) + '…' : cmd;
+                else
+                  summary = 'Agent action';
+              }
+              const canRollback = ok && a.rollback_cmd;
+              return (
+                <div key={a.id || i} style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 10,
+                  padding: '9px 0',
+                  borderBottom: i < Math.min(auditLog.length, 10) - 1 ? '1px solid var(--border-dim)' : 'none',
+                }}>
+                  <div style={{
+                    width: 20, height: 20, borderRadius: '50%', flexShrink: 0, marginTop: 1,
+                    background: ok ? 'rgba(34,204,102,0.12)' : 'rgba(233,69,96,0.12)',
+                    border: `1px solid ${ok ? 'rgba(34,204,102,0.3)' : 'rgba(233,69,96,0.3)'}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 10, color: ok ? 'var(--green)' : 'var(--red)',
+                  }}>
+                    {ok ? '✓' : '✗'}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: ok ? 'var(--text)' : 'var(--text-dim)' }}>
+                      {summary}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {ts && <span>{ts}</span>}
+                      {src && <span style={{ opacity: 0.7 }}>via {src.replace(/_/g, ' ')}</span>}
+                      {canRollback && (
+                        <span style={{ color: 'var(--amber)', cursor: 'pointer', textDecoration: 'underline' }}
+                          onClick={() => _runCmd(a.rollback_cmd, 'rollback')}
+                          title={`Rollback: ${a.rollback_cmd}`}>
+                          rollback available
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3209,32 +3642,11 @@ function DeployDetailsSubTab({ hostname, demoMode }) {
         )}
       </div>
 
-      {/* 19 features being collected */}
-      <div className="card" style={{ marginBottom: 14 }}>
-        <div className="section-title" style={{ marginBottom: 12 }}>19 Features Collected Each Cycle</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 6 }}>
-          {[
-            { group: 'System Resources',  color: '#4a9eff', items: ['CPU usage', 'Memory usage', 'Disk usage'] },
-            { group: 'Process Behaviour', color: '#f5a623', items: ['Proc spawn rate', 'Root process ratio', 'Command entropy', 'New processes (1h)', 'Privilege escalations'] },
-            { group: 'Network Activity',  color: '#22cc66', items: ['Outbound conn rate', 'Unique dst IPs', 'Unique dst ports', 'Port entropy', 'Failed conn ratio', 'Suspicious connections'] },
-            { group: 'Threat Signals',    color: '#e94560', items: ['Failed logins (1h)', 'Temporal rhythm deviation', 'Causal chain novelty', 'Concealment signal', 'Anomaly score'] },
-          ].map(g => (
-            <div key={g.group} style={{ padding: '10px 12px', background: 'var(--bg-raised)', borderRadius: 7, borderLeft: `3px solid ${g.color}` }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: g.color, marginBottom: 6, letterSpacing: 0.4 }}>{g.group.toUpperCase()}</div>
-              {g.items.map(item => (
-                <div key={item} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                  <div style={{ width: 5, height: 5, borderRadius: '50%', background: g.color, flexShrink: 0 }} />
-                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{item}</span>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-        <div style={{ marginTop: 10, fontSize: 10, color: 'var(--text-faint)' }}>
-          All 19 signals → BehavioralAE (19→64→8) → 8-dim latent → 3-qubit AmplitudeEmbedding → V3 quantum confidence.
-          Collection runs every {collInt}s as a background process on the server.
-        </div>
-      </div>
+      {/* How TAARA Works — architecture flowchart */}
+      <TaaraArchFlowchart />
+
+      {/* Documentation — password protected */}
+      <TaaraDocsButton />
 
       {/* Test alert trigger */}
       <TaaraWareTestAlert />

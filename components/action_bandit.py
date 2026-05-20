@@ -53,20 +53,40 @@ ACTION_AUTONOMY_REQUIREMENTS = {
     "terminate_service": 5,   # Stop a service entirely
 }
 
-# Quantum fidelity buckets — these are the "context" dimension
-# F < 0.3: maximal divergence from safe behavior (critical)
-# 0.3-0.5: unsafe direction (high)
-# 0.5-0.7: drifting (medium)
-# 0.7-1.0: normal (low / monitor)
-def fidelity_bucket(f_min: float) -> str:
-    if f_min < 0.3:
+# Which OS capability each action type requires.
+# If the platform's capabilities dict doesn't have the key as True, the action is filtered out.
+# Missing entry = no capability requirement (always available).
+ACTION_CAPABILITY_REQUIREMENTS: Dict[str, str] = {
+    "block_ip":       "fail2ban",
+    "rate_limit_ssh": "tc",
+    "firewall_rule":  "iptables",
+}
+
+# Fallback action when the preferred one is unavailable
+ACTION_FALLBACKS: Dict[str, str] = {
+    "block_ip": "kill_process",   # if no fail2ban: kill the session process instead
+}
+
+# Quantum confidence buckets — calibrated to V3 fusion confidence scale
+# V3 normal sessions produce conf ~0.20, attacks ~0.48, threshold ~0.4382
+# conf > 0.60: severe behavioral divergence (critical)
+# conf > 0.4382: crossed detection threshold (unsafe direction)
+# conf > 0.25: drifting toward anomaly
+# else: within normal range
+def confidence_bucket(quantum_confidence: float) -> str:
+    if quantum_confidence > 0.60:
         return "critical_divergence"
-    elif f_min < 0.5:
+    elif quantum_confidence > 0.4382:
         return "unsafe_direction"
-    elif f_min < 0.7:
+    elif quantum_confidence > 0.25:
         return "drifting"
     else:
         return "normal"
+
+
+# Kept for backward compatibility — maps old f_min signal to bucket
+def fidelity_bucket(f_min: float) -> str:
+    return confidence_bucket(1.0 - f_min) if f_min is not None else "normal"
 
 
 class ContrastiveBandit:
@@ -93,16 +113,34 @@ class ContrastiveBandit:
         Rank candidate actions by UCB score in the given context.
         Returns top_k actions with scores, pre-approval flags, and bandit rationale.
         """
-        f_min = context.get("f_min", 1.0)
-        bucket = fidelity_bucket(f_min)
+        quantum_confidence = context.get("quantum_confidence", context.get("f_min", 0.0))
+        bucket = confidence_bucket(quantum_confidence)
         platform = context.get("platform_type", "ssh")
+        capabilities: Dict[str, bool] = context.get("capabilities", {})
         total_rounds = max(sum(
             s.get("n_proposed", 0)
             for s in self.arm_stats.values()
         ), 1)
 
-        scored = []
+        # Filter candidates to what this environment can execute, inject fallbacks
+        filtered = []
         for action in candidate_actions:
+            atype = action.get("action_type", "")
+            required_cap = ACTION_CAPABILITY_REQUIREMENTS.get(atype)
+            if required_cap and capabilities and not capabilities.get(required_cap, True):
+                # Environment lacks this capability — substitute fallback if one exists
+                fallback = ACTION_FALLBACKS.get(atype)
+                if fallback:
+                    action = dict(action)
+                    action["action_type"] = fallback
+                    action["title"] = action.get("title", atype) + f" [fallback: {fallback}]"
+                    action["_original_action"] = atype
+                else:
+                    continue  # drop — no fallback, silently skip
+            filtered.append(action)
+
+        scored = []
+        for action in filtered:
             action_type = action.get("action_type", action.get("code", "")[:30])
             arm_key = f"{bucket}:{platform}:{action_type}"
 
@@ -230,19 +268,19 @@ class ContrastiveBandit:
         if not successes or not failures:
             return None
 
-        # Compare quantum fidelity distributions
-        success_f = [p["context"].get("f_min", 1.0) for p in successes]
-        failure_f = [p["context"].get("f_min", 1.0) for p in failures]
+        # Compare quantum confidence distributions
+        success_c = [p["context"].get("quantum_confidence", p["context"].get("f_min", 0.0)) for p in successes]
+        failure_c = [p["context"].get("quantum_confidence", p["context"].get("f_min", 0.0)) for p in failures]
 
-        avg_success_f = sum(success_f) / len(success_f)
-        avg_failure_f = sum(failure_f) / len(failure_f)
+        avg_success_c = sum(success_c) / len(success_c)
+        avg_failure_c = sum(failure_c) / len(failure_c)
 
-        if abs(avg_success_f - avg_failure_f) > 0.15:
-            direction = "lower" if avg_success_f < avg_failure_f else "higher"
+        if abs(avg_success_c - avg_failure_c) > 0.10:
+            direction = "higher" if avg_success_c > avg_failure_c else "lower"
             return (
-                f"This action succeeds when quantum fidelity is {direction} "
-                f"(avg F={avg_success_f:.2f} on success vs F={avg_failure_f:.2f} on failure). "
-                f"Quantum signal is the reliable predictor here."
+                f"This action succeeds when quantum confidence is {direction} "
+                f"(avg conf={avg_success_c:.2f} on success vs conf={avg_failure_c:.2f} on failure). "
+                f"Quantum confidence is the reliable predictor here."
             )
         return None
 

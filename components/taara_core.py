@@ -18,11 +18,58 @@ import numpy as np
 import json
 import os
 import time
+import hashlib
+import hmac as _hmac_mod
+import base64
 from collections import deque
 from typing import Dict, List, Optional, Tuple
 from components.quantum_engine import (QuantumValidator,
     latent_swap_fidelity, latent_directionality,
     latent_deviation_angle, latent_phase_coherence, quantum_confidence_v3)
+
+
+# ── State encryption helpers ──────────────────────────────────────────────────
+
+def _derive_state_key() -> bytes:
+    """
+    Derive 32-byte AES key from available key material.
+    Uses SSH host key fingerprints from client_keys.json, concatenated and hashed.
+    Falls back to a machine-local secret (hostname + uid) if no keys registered yet.
+    """
+    keys_path = os.path.join("models", "client_keys.json")
+    material = b""
+    try:
+        with open(keys_path) as f:
+            store = json.load(f)
+        for entry in store.values():
+            fp = entry.get("ssh_host_key_fingerprint") or entry.get("fingerprint", "")
+            if fp:
+                material += fp.encode()
+    except Exception:
+        pass
+    if not material:
+        import socket
+        material = socket.gethostname().encode() + str(os.getuid() if hasattr(os, "getuid") else 0).encode()
+    return hashlib.sha3_256(material + b"taara-state-v1").digest()
+
+
+def _encrypt_state(plaintext: bytes, key: bytes) -> bytes:
+    """AES-256-GCM encrypt. Returns: 12-byte nonce || ciphertext+tag."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    nonce = os.urandom(12)
+    ct = AESGCM(key).encrypt(nonce, plaintext, b"taara-state")
+    return nonce + ct
+
+
+def _decrypt_state(blob: bytes, key: bytes) -> bytes:
+    """AES-256-GCM decrypt. Raises ValueError on tamper."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    nonce, ct = blob[:12], blob[12:]
+    return AESGCM(key).decrypt(nonce, ct, b"taara-state")
+
+
+def _state_hmac(cipherblob: bytes, key: bytes) -> str:
+    return _hmac_mod.new(key, cipherblob, hashlib.sha3_256).hexdigest()
 
 
 class IdentityMemoryBasis:
@@ -305,6 +352,10 @@ class TAARAnalyzer:
                         q_directionality  = round(qd, 4)
                         phase_coherence   = round(coh, 4)
                         quantum_confidence = round(qc, 4)
+                        qs['last_swap_fidelity']      = swap_fidelity
+                        qs['last_q_directionality']   = q_directionality
+                        qs['last_phase_coherence']    = phase_coherence
+                        qs['last_quantum_confidence'] = quantum_confidence
                 except Exception:
                     pass
             return {
@@ -370,6 +421,11 @@ class TAARAnalyzer:
                     risk['q_directionality']   = round(qd, 4)
                     risk['phase_coherence']    = round(coh, 4)
                     risk['quantum_confidence'] = round(qc, 4)
+                    # Cache last computed values for /api/identities endpoint
+                    qs['last_swap_fidelity']      = round(sf, 4)
+                    qs['last_q_directionality']   = round(qd, 4)
+                    qs['last_phase_coherence']    = round(coh, 4)
+                    qs['last_quantum_confidence'] = round(qc, 4)
                     # Override risk_score with validated confidence (0-100 scale)
                     risk['risk_score'] = round(qc * 100, 1)
                     risk['severity'] = (
@@ -510,9 +566,7 @@ class TAARAnalyzer:
         }
 
     def save_state(self):
-        """Persist all memory bases and quantum state."""
-        # Serialise per-identity quantum state (PCA arrays + fitted weights + threshold)
-        # Embedder object is excluded — reconnected at load time from the live embedder.
+        """Persist all memory bases and quantum state — AES-256-GCM encrypted + HMAC-SHA3."""
         quantum_state_serial = {}
         for iid, qs in self._quantum_state.items():
             entry = {
@@ -524,7 +578,6 @@ class TAARAnalyzer:
                 entry['pca_mean']       = qs['pca_mean'].tolist()
                 entry['pca_complement'] = qs['pca_complement'].tolist()
             if qs.get('normal_latents'):
-                # Keep up to last 50 normal latents for re-fitting on next train run
                 entry['normal_latents'] = [z.tolist() for z in qs['normal_latents'][-50:]]
             quantum_state_serial[iid] = entry
 
@@ -534,27 +587,52 @@ class TAARAnalyzer:
             'quantum_memory_residuals': [r.tolist() for r in self.quantum_validator.memory_residuals],
             'quantum_state': quantum_state_serial,
         }
-        path = os.path.join(self.model_dir, 'taara_state.json')
-        with open(path, 'w') as f:
-            json.dump(state, f, indent=2)
+        try:
+            plaintext = json.dumps(state).encode()
+            key = _derive_state_key()
+            blob = _encrypt_state(plaintext, key)
+            tag  = _state_hmac(blob, key)
+            envelope = {"v": 2, "hmac": tag, "data": base64.b64encode(blob).decode()}
+            path = os.path.join(self.model_dir, 'taara_state.json')
+            with open(path, 'w') as f:
+                json.dump(envelope, f)
+        except Exception as e:
+            print(f"[TAARAnalyzer] State encryption failed ({e}), falling back to plaintext")
+            path = os.path.join(self.model_dir, 'taara_state.json')
+            with open(path, 'w') as f:
+                json.dump(state, f, indent=2)
 
     def _load_state(self):
-        """Load persisted state."""
+        """Load persisted state — decrypt and verify HMAC. Tamper fires alert."""
         path = os.path.join(self.model_dir, 'taara_state.json')
         if not os.path.exists(path):
             return
         try:
             with open(path, 'r') as f:
-                state = json.load(f)
+                raw = json.load(f)
+
+            # Versioned encrypted envelope
+            if isinstance(raw, dict) and raw.get("v") == 2:
+                key  = _derive_state_key()
+                blob = base64.b64decode(raw["data"])
+                expected_tag = _state_hmac(blob, key)
+                if not _hmac_mod.compare_digest(expected_tag, raw.get("hmac", "")):
+                    print("[TAARAnalyzer] TAMPER ALERT: taara_state.json HMAC mismatch — "
+                          "state not loaded. Attacker may have modified baseline.")
+                    return
+                state = json.loads(_decrypt_state(blob, key))
+            else:
+                # Legacy plaintext state — load as-is, will be re-encrypted on next save
+                state = raw
+
             for k, v in state.get('memory_bases', {}).items():
                 self.memory_bases[k] = IdentityMemoryBasis.from_dict(v)
             self.stats = state.get('stats', self.stats)
             for r in state.get('quantum_memory_residuals', []):
                 self.quantum_validator.add_to_memory(np.array(r))
-            # Restore quantum state — embedder is None until reconnected by server
             for iid, qs_data in state.get('quantum_state', {}).items():
                 qs = {
-                    'embedder':       None,   # reconnected at first inference call
+                    'embedder':       None,
                     'normal_latents': [np.array(z) for z in qs_data.get('normal_latents', [])],
                     'pca_basis':      np.array(qs_data['pca_basis'])      if 'pca_basis'      in qs_data else None,
                     'pca_mean':       np.array(qs_data['pca_mean'])       if 'pca_mean'       in qs_data else None,

@@ -335,7 +335,11 @@ function InvestigateModal({ onClose, onMarkNormal, onExecute }) {
                           <span style={{ fontSize: 11, fontWeight: 700, color: rec.pre_approved ? '#22cc66' : '#4a9eff' }}>{rec.action_type.replace(/_/g,' ')}</span>
                           {rec.pre_approved && <span style={{ fontSize: 8, background: 'rgba(34,204,102,0.2)', color: '#22cc66', borderRadius: 3, padding: '1px 5px', fontWeight: 700 }}>PRE-APPROVED</span>}
                           <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.25)', marginLeft: 'auto' }}>
-                            {rec.times_seen > 0 ? `seen ${rec.times_seen}× · ${Math.round(rec.success_rate * 100)}% success` : 'unexplored'}
+                            {rec.times_seen > 0
+                              ? rec.pre_approved
+                                ? `${Math.round((rec.success_rate || 0) * rec.times_seen)} of ${rec.times_seen} approvals in this context`
+                                : `seen ${rec.times_seen}× · ${Math.round((rec.success_rate || 0) * 100)}% success`
+                              : 'unexplored'}
                           </span>
                         </div>
                         <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>{rec.description}</div>

@@ -117,7 +117,7 @@ _state: Dict[str, Any] = {
 }
 
 _lock = threading.Lock()
-_STATUS_CACHE_TTL = 30.0  # seconds between SSH buffer fetches
+_STATUS_CACHE_TTL = 15.0  # seconds between SSH buffer fetches
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -232,7 +232,8 @@ def connect(req: ConnectRequest):
 
         success = platform.connect()
         if not success:
-            raise HTTPException(status_code=401, detail="Connection failed — check credentials")
+            err = getattr(platform, 'last_error', '') or 'check credentials'
+            raise HTTPException(status_code=401, detail=f"Connection failed — {err}")
 
         _state["platform"] = platform
         _state["platform_type"] = req.platform_type
@@ -564,21 +565,14 @@ def deploy_taaraware(req: DeployRequest):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 FEATURE_NAMES_19 = [
-    "cpu_usage", "memory_usage", "disk_usage",
-    "proc_spawn_rate", "proc_root_ratio", "proc_cmd_entropy",
-    "net_outbound_conn_rate", "net_unique_dst_ips", "net_unique_dst_ports",
-    "net_port_entropy", "net_failed_conn_ratio",
-    "failed_logins_1h", "new_processes_1h",
-    "suspicious_connections", "privilege_escalations",
-    "temporal_rhythm_deviation", "causal_chain_novelty",
-    "concealment_signal", "proc_cmd_novelty",
+    "session_duration", "commands_per_minute", "inter_cmd_timing_std",
+    "session_idle_ratio", "unique_commands", "command_entropy",
+    "shell_history_delta", "sensitive_path_access", "hardware_enum_count",
+    "outbound_connections", "persistence_attempt", "malware_exec_pattern",
+    "process_spawn_count", "network_device_shell", "data_volume_proxy",
+    "time_sin_hour", "time_cos_hour", "time_sin_dow", "time_cos_dow",
 ]
-RAW_EXTRA_FIELDS = [
-    "load_avg_1m", "load_avg_5m", "load_avg_15m",
-    "active_connections", "process_count",
-    "proc_short_lived_ratio", "proc_uid_diversity",
-    "network_bytes_sent", "network_bytes_recv",
-]
+RAW_EXTRA_FIELDS: List[str] = []  # no extra fields in v8 behavioral feature set
 
 _status_refresh_lock = threading.Lock()
 _status_refreshing   = False
@@ -604,14 +598,22 @@ def _do_status_refresh():
         if buffer:
             features = buffer[-1].get("features") or buffer[-1]
             fv = np.array([float(features.get(k, 0.0)) for k in FEATURE_NAMES_19], dtype=np.float32)
+            # Verify HMAC tag if present — rejects injected fake telemetry
+            from components.atomic_dna_collector import verify_vector as _verify_fv
+            _hmac_tag = features.get("_hmac_tag", "")
+            if not _verify_fv(fv, _hmac_tag, host):
+                print(f"[TAARA] HMAC mismatch from {host} — dropping vector, possible telemetry injection")
+                fv = None
             feature_vector = {k: float(features.get(k, 0.0)) for k in FEATURE_NAMES_19}
+            if fv is None:
+                feature_vector["_tamper_alert"] = 1.0
             for k in RAW_EXTRA_FIELDS:
                 if k in features:
                     feature_vector[k] = float(features[k])
 
             classical_anomaly = False
             anomaly_score_val = recon_error = latent_fidelity = None
-            if embedder and detector and embedder.is_trained and detector.is_ready():
+            if fv is not None and embedder and detector and embedder.is_trained and detector.is_ready():
                 try:
                     recon_error    = embedder.reconstruction_error(fv)
                     current_latent = embedder.embed(fv)
@@ -631,7 +633,7 @@ def _do_status_refresh():
                 except Exception:
                     pass
 
-            if taara_analyzer:
+            if fv is not None and taara_analyzer:
                 try:
                     identity = f"taaraware_{host}"
                     qr       = taara_analyzer.get_quantum_risk_assessment(fv, identity_id=identity, embedder=embedder)
@@ -651,8 +653,13 @@ def _do_status_refresh():
                         "phase_coherence": qr.get("phase_coherence"),
                         "quantum_confidence": qc,
                     }
-                    basis_mature = qr.get("basis_size", 0) >= 3
-                    alert_cond   = basis_mature and qc is not None and qc > 0.1854
+                    # Per-identity threshold from quantum state — calibrated as p95 of normal
+                    # training windows. Falls back to 0.4382 (empirical from pretrained seeding).
+                    qs = taara_analyzer._quantum_state.get(f"taaraware_{host}", {})
+                    qthresh = qs.get("threshold", 0.4382)
+                    novelty_result["threshold"] = qthresh
+                    # Alert fires purely on quantum confidence — no rule-based gates
+                    alert_cond = qc is not None and qc > qthresh
                     if alert_cond:
                         _state["active_alert"] = {
                             "timestamp": time.time(), "score": qr.get("risk_score", 0),
@@ -666,29 +673,20 @@ def _do_status_refresh():
                 except Exception:
                     pass
 
-        # Fallback: no live data yet — run inference on zero probe so stats show immediately
+        # No live data yet — report basis size only, no synthetic probe
         if novelty_result is None and taara_analyzer:
             identity  = f"taaraware_{host}"
             basis_obj = taara_analyzer.memory_bases.get(identity)
             bs        = len(basis_obj.basis_vectors) if basis_obj else 0
-            probe     = (np.mean(basis_obj.basis_vectors, axis=0).astype(np.float32)
-                         if basis_obj and len(basis_obj.basis_vectors) >= 1
-                         else np.zeros(19, dtype=np.float32))
-            try:
-                qr = taara_analyzer.get_quantum_risk_assessment(probe, identity_id=identity, embedder=embedder)
-                novelty_result = {
-                    "basis_size": bs, "f_min": qr.get("f_min"),
-                    "swap_fidelity": qr.get("swap_fidelity"),
-                    "q_directionality": qr.get("q_directionality"),
-                    "phase_coherence": qr.get("phase_coherence"),
-                    "quantum_confidence": qr.get("quantum_confidence"),
-                    "severity": qr.get("severity", "BOOTSTRAPPING"),
-                    "note": qr.get("note", ""),
-                }
-            except Exception:
-                novelty_result = {"basis_size": bs, "f_min": None,
-                                  "swap_fidelity": None, "q_directionality": None,
-                                  "phase_coherence": None, "quantum_confidence": None}
+            qs        = taara_analyzer._quantum_state.get(identity)
+            thresh    = qs.get("threshold", 0.4382) if qs else 0.4382
+            novelty_result = {
+                "basis_size": bs, "f_min": None,
+                "swap_fidelity": None, "q_directionality": None,
+                "phase_coherence": None, "quantum_confidence": None,
+                "severity": "WAITING", "note": "Waiting for TaaraWare data",
+                "threshold": thresh,
+            }
 
         training_mgr = _state["training_mgr"]
         _state["_status_cache"] = {
@@ -736,10 +734,13 @@ def get_status():
     cache_age  = now - _state["_status_cache_ts"]
     cache_host = _state["_status_cache_host"]
 
-    # Kick off a background refresh if cache is stale (>30s) or for a different host
+    # Kick off a background refresh if cache is stale (>15s) or for a different host
     global _status_refreshing
-    if (cache_age > _STATUS_CACHE_TTL or cache_host != host) and not _status_refreshing:
-        _status_refreshing = True
+    with _status_refresh_lock:
+        should_refresh = (cache_age > _STATUS_CACHE_TTL or cache_host != host) and not _status_refreshing
+        if should_refresh:
+            _status_refreshing = True
+    if should_refresh:
         t = threading.Thread(target=_do_status_refresh, daemon=True)
         t.start()
 
@@ -752,31 +753,22 @@ def get_status():
         cached["training_status"] = training_mgr.get_status() if training_mgr else {}
         return cached
 
-    # Very first call before any refresh completes: return minimal response with quantum signals
+    # Very first call before any refresh completes: return basis size, no synthetic probe
     taara_analyzer = _state.get("taara_analyzer")
-    embedder       = _state.get("embedder")
     novelty_result = None
     if taara_analyzer:
         identity  = f"taaraware_{host}"
         basis_obj = taara_analyzer.memory_bases.get(identity)
         bs        = len(basis_obj.basis_vectors) if basis_obj else 0
-        probe     = (np.mean(basis_obj.basis_vectors, axis=0).astype(np.float32)
-                     if basis_obj and len(basis_obj.basis_vectors) >= 1
-                     else np.zeros(19, dtype=np.float32))
-        try:
-            qr = taara_analyzer.get_quantum_risk_assessment(probe, identity_id=identity, embedder=embedder)
-            novelty_result = {
-                "basis_size": bs, "f_min": qr.get("f_min"),
-                "swap_fidelity": qr.get("swap_fidelity"),
-                "q_directionality": qr.get("q_directionality"),
-                "phase_coherence": qr.get("phase_coherence"),
-                "quantum_confidence": qr.get("quantum_confidence"),
-                "severity": qr.get("severity", "BOOTSTRAPPING"),
-            }
-        except Exception:
-            novelty_result = {"basis_size": bs, "f_min": None,
-                              "swap_fidelity": None, "q_directionality": None,
-                              "phase_coherence": None, "quantum_confidence": None}
+        qs        = taara_analyzer._quantum_state.get(identity)
+        thresh    = qs.get("threshold", 0.4382) if qs else 0.4382
+        novelty_result = {
+            "basis_size": bs, "f_min": None,
+            "swap_fidelity": None, "q_directionality": None,
+            "phase_coherence": None, "quantum_confidence": None,
+            "severity": "WAITING", "note": "Waiting for TaaraWare data",
+            "threshold": thresh,
+        }
 
     return {
         "connected": True,
@@ -896,13 +888,13 @@ def investigate_alert():
     phase_coherence_inv  = active.get("phase_coherence")
     quantum_conf_inv     = active.get("quantum_confidence")
 
-    # Build top signals — features most deviated from typical range
+    # Build top signals — features most deviated from typical normal range
     SIGNAL_NORMS = {
-        "cpu_usage": 50, "memory_usage": 60, "disk_usage": 40,
-        "proc_spawn_rate": 5, "proc_root_ratio": 0.5, "proc_cmd_entropy": 4.0,
-        "net_outbound_conn_rate": 30, "net_unique_dst_ips": 3, "net_unique_dst_ports": 10,
-        "net_failed_conn_ratio": 0.1, "failed_logins_1h": 0, "causal_chain_novelty": 0.05,
-        "concealment_signal": 0, "temporal_rhythm_deviation": 0,
+        "session_duration": 420, "commands_per_minute": 3.5, "inter_cmd_timing_std": 18,
+        "session_idle_ratio": 0.55, "unique_commands": 12, "command_entropy": 2.8,
+        "shell_history_delta": 3, "sensitive_path_access": 0, "hardware_enum_count": 0,
+        "outbound_connections": 1, "persistence_attempt": 0, "malware_exec_pattern": 0,
+        "process_spawn_count": 0, "network_device_shell": 0, "data_volume_proxy": 1,
     }
     top_signals = []
     for k, norm in SIGNAL_NORMS.items():
@@ -913,17 +905,23 @@ def investigate_alert():
         top_signals.append({"key": k, "value": round(float(val), 4), "deviation": round(deviation, 2), "normal": norm})
     top_signals = sorted(top_signals, key=lambda x: -x["deviation"])[:6]
 
+    # Per-identity threshold for this host
+    taara_analyzer = _state.get("taara_analyzer")
+    identity_key   = f"taaraware_{host}"
+    qs_inv         = (taara_analyzer._quantum_state.get(identity_key, {}) if taara_analyzer else {})
+    qthresh_inv    = qs_inv.get("threshold", 0.4382)
+
     # Plain-English quantum explanation — use quantum_confidence (v3) when available
     if quantum_conf_inv is not None:
         qc = quantum_conf_inv
         if qc >= 0.75:
             zone = "CRITICAL"
             zone_explain = (
-                f"Quantum confidence = {qc:.4f} (threshold 0.1854). All three quantum signals fire together: "
+                f"Quantum confidence = {qc:.4f} (threshold {qthresh_inv:.4f}). All three quantum signals fire together: "
                 f"SWAP fidelity = {swap_fidelity_inv:.4f} (outside normal subspace), "
                 f"directionality = {q_directionality_inv:.4f} (high complement alignment), "
                 f"phase coherence = {phase_coherence_inv:.4f} (sustained drift pattern). "
-                "The interference fusion formula α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir) places this firmly above the p95 normal threshold. "
+                "The interference fusion α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir) places this firmly above the per-identity p95 threshold. "
                 "High probability of T1078 Valid Account credential misuse."
             )
         elif qc >= 0.45:
@@ -934,16 +932,16 @@ def investigate_alert():
                 f"phase coherence = {phase_coherence_inv:.4f}. "
                 "Pattern is consistent with attacker using stolen credentials — moving outside the normal behavioral subspace."
             )
-        elif qc >= 0.1854:
-            zone = "MEDIUM"
+        elif qc > qthresh_inv:
+            zone = "ALERT"
             zone_explain = (
-                f"Quantum confidence = {qc:.4f} (just above 0.1854 threshold). Early-stage behavioral deviation. "
+                f"Quantum confidence = {qc:.4f} crossed per-identity threshold {qthresh_inv:.4f}. "
                 f"SWAP fidelity = {swap_fidelity_inv:.4f}, directionality = {q_directionality_inv:.4f}. "
-                "Consistent with initial reconnaissance or behavioral drift. Monitor for escalation."
+                "Early-stage behavioral deviation above calibrated normal boundary. Monitor for escalation."
             )
         else:
-            zone = "LOW"
-            zone_explain = f"Quantum confidence = {qc:.4f}. Low but above threshold. May be transient deviation."
+            zone = "WATCHING"
+            zone_explain = f"Quantum confidence = {qc:.4f}. Below threshold {qthresh_inv:.4f}. Normal range."
         divergence_pct = round(qc * 100, 1)
     else:
         divergence_pct = round((1.0 - f_min) * 100, 1)
@@ -985,10 +983,13 @@ def investigate_alert():
                 "You use quantum-enhanced behavioral analytics to detect MITRE ATT&CK T1078 (Valid Account abuse).\n\n"
                 "DETECTION METHODOLOGY:\n"
                 "Each SSH session is represented as a 19-dimensional behavioral DNA vector:\n"
-                "  [cpu, memory, disk, proc_spawn_rate, proc_root_ratio, proc_cmd_entropy,\n"
-                "   net_outbound_rate, unique_dst_ips, unique_dst_ports, port_entropy, failed_conn_ratio,\n"
-                "   failed_logins_1h, new_processes_1h, suspicious_connections, privilege_escalations,\n"
-                "   temporal_rhythm_deviation, causal_chain_novelty, concealment_signal, anomaly_score]\n\n"
+                "  [session_duration, commands_per_minute, inter_cmd_timing_std,\n"
+                "   session_idle_ratio, unique_commands, command_entropy, shell_history_delta,\n"
+                "   sensitive_path_access, hardware_enum_count, outbound_connections,\n"
+                "   persistence_attempt, malware_exec_pattern, process_spawn_count,\n"
+                "   network_device_shell, data_volume_proxy,\n"
+                "   time_sin_hour, time_cos_hour, time_sin_dow, time_cos_dow]\n"
+                "Features 8/10/13 were discovered via transformer attention analysis (not hand-engineered).\n\n"
                 "This vector is encoded as a 3-qubit quantum state |ψ_t⟩ via AmplitudeEmbedding on the\n"
                 "8-dimensional latent space from a pretrained BehavioralAE (19→64→8→64→19, Tanh bottleneck).\n\n"
                 "QUANTUM SIGNALS (V3 fusion: conf = α·swap_s + β·q_dir + γ·coh·√(swap_s·q_dir)):\n"
@@ -1044,11 +1045,17 @@ def investigate_alert():
     agent = _state.get("security_agent")
     if agent and hasattr(agent, "bandit"):
         try:
-            from components.action_bandit import fidelity_bucket
-            f_ctx = quantum_conf_inv if quantum_conf_inv is not None else (1.0 - f_min if f_min else 0.5)
+            from components.action_bandit import confidence_bucket
+            quantum_conf_val = active.get("quantum_confidence", None)
+            if quantum_conf_val is None and f_min is not None:
+                quantum_conf_val = 1.0 - f_min
+            if quantum_conf_val is None:
+                quantum_conf_val = 0.0
+            _plat = _state.get("platform")
             bandit_context = {
-                "f_min": active.get("f_min", 0.5),
+                "quantum_confidence": quantum_conf_val,
                 "platform_type": _state.get("platform_type", "ssh"),
+                "capabilities": getattr(_plat, "capabilities", {}),
             }
             # Standard T1078 candidate actions for this context
             candidates = [
@@ -1122,17 +1129,7 @@ def mark_alert_normal():
     host = active.get("host", "unknown")
     identity = f"taaraware_{host}"
 
-    FEATURE_NAMES = [
-        "cpu_usage", "memory_usage", "disk_usage",
-        "proc_spawn_rate", "proc_root_ratio", "proc_cmd_entropy",
-        "net_outbound_conn_rate", "net_unique_dst_ips", "net_unique_dst_ports",
-        "net_port_entropy", "net_failed_conn_ratio",
-        "failed_logins_1h", "new_processes_1h",
-        "suspicious_connections", "privilege_escalations",
-        "temporal_rhythm_deviation", "causal_chain_novelty",
-        "concealment_signal", "proc_cmd_novelty",
-    ]
-    fv = np.array([float(fv_dict.get(k, 0.0)) for k in FEATURE_NAMES], dtype=np.float32)
+    fv = np.array([float(fv_dict.get(k, 0.0)) for k in FEATURE_NAMES_19], dtype=np.float32)
 
     if taara_analyzer:
         basis = taara_analyzer.get_or_create_basis(identity)
@@ -1172,17 +1169,7 @@ def ignore_alert():
     host = active.get("host", "unknown")
     identity = f"taaraware_{host}"
 
-    FEATURE_NAMES = [
-        "cpu_usage", "memory_usage", "disk_usage",
-        "proc_spawn_rate", "proc_root_ratio", "proc_cmd_entropy",
-        "net_outbound_conn_rate", "net_unique_dst_ips", "net_unique_dst_ports",
-        "net_port_entropy", "net_failed_conn_ratio",
-        "failed_logins_1h", "new_processes_1h",
-        "suspicious_connections", "privilege_escalations",
-        "temporal_rhythm_deviation", "causal_chain_novelty",
-        "concealment_signal", "proc_cmd_novelty",
-    ]
-    fv = np.array([float(fv_dict.get(k, 0.0)) for k in FEATURE_NAMES], dtype=np.float32)
+    fv = np.array([float(fv_dict.get(k, 0.0)) for k in FEATURE_NAMES_19], dtype=np.float32)
 
     if taara_analyzer:
         basis = taara_analyzer.get_or_create_basis(identity)
@@ -1280,6 +1267,8 @@ def _run_command(platform, platform_type, command, language="bash", stdin_input=
 def _bandit_context_from_state() -> Dict:
     """Extract current quantum context from state for bandit recording."""
     alert = _state.get("active_alert") or {}
+    platform = _state.get("platform")
+    caps = getattr(platform, "capabilities", {}) if platform else {}
     return {
         "f_min": alert.get("f_min", 1.0),
         "quantum_confidence": alert.get("quantum_confidence"),
@@ -1288,6 +1277,7 @@ def _bandit_context_from_state() -> Dict:
         "phase_coherence": alert.get("phase_coherence"),
         "host": _state.get("connected_host", "unknown"),
         "platform_type": _state.get("platform_type", "ssh"),
+        "capabilities": caps,
     }
 
 
@@ -1896,7 +1886,7 @@ def get_bandit_summary():
 
 
 @app.get("/api/actions/bandit-recommend")
-def bandit_recommend(f_min: float = None, platform_type: str = None, top_k: int = 5):
+def bandit_recommend(f_min: Optional[str] = None, platform_type: str = None, top_k: int = 5):
     """
     Return bandit-ranked action recommendations for the current or specified quantum context.
     If f_min is not provided, uses the current active alert's f_min.
@@ -1905,14 +1895,24 @@ def bandit_recommend(f_min: float = None, platform_type: str = None, top_k: int 
     if not agent or not hasattr(agent, "bandit"):
         return {"recommendations": [], "context": {}}
 
-    # Resolve context
-    if f_min is None:
+    # Resolve context — f_min comes in as string (may be empty "")
+    try:
+        f_min_val = float(f_min) if f_min and f_min.strip() else None
+    except (ValueError, TypeError):
+        f_min_val = None
+    if f_min_val is None:
         alert = _state.get("active_alert") or {}
-        f_min = alert.get("f_min", 1.0)
-    if platform_type is None:
+        f_min_val = alert.get("f_min", 1.0)
+    f_min = f_min_val
+    if platform_type is None or not platform_type.strip():
         platform_type = _state.get("platform_type", "ssh") or "ssh"
 
-    bandit_context = {"f_min": f_min, "platform_type": platform_type}
+    _plat2 = _state.get("platform")
+    bandit_context = {
+        "f_min": f_min,
+        "platform_type": platform_type,
+        "capabilities": getattr(_plat2, "capabilities", {}),
+    }
 
     from components.action_bandit import fidelity_bucket
     bucket = fidelity_bucket(f_min)
@@ -1979,79 +1979,67 @@ def get_agent_stats():
 # Useful for demos without a live SSH server.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Feature names — matches TaaraWare's 17-feature vector
+# Feature names — 19-dim behavioral vector matching TAARA v8 benchmark (extract_19)
 _DEMO_FEATURE_NAMES = [
-    "cpu_usage", "memory_usage", "disk_usage",
-    "network_bytes_sent", "network_bytes_recv",
-    "active_connections", "process_count",
-    "load_avg_1m", "load_avg_5m", "load_avg_15m",
-    "failed_logins_1h", "new_processes_1h",
-    "suspicious_connections", "privilege_escalations",
-    "temporal_rhythm_deviation", "causal_chain_novelty", "concealment_signal",
+    "session_duration", "commands_per_minute", "inter_cmd_timing_std",
+    "session_idle_ratio", "unique_commands", "command_entropy",
+    "shell_history_delta", "sensitive_path_access", "hardware_enum_count",
+    "outbound_connections", "persistence_attempt", "malware_exec_pattern",
+    "process_spawn_count", "network_device_shell", "data_volume_proxy",
+    "time_sin_hour", "time_cos_hour", "time_sin_dow", "time_cos_dow",
 ]
 
-# Normal baseline parameters — realistic ranges for a lightly loaded Linux server
-# These are the RANGES, not specific values. Actual values are sampled per-tick.
+# Normal baseline parameters — realistic ranges for a legitimate SSH admin session
+# (mean, std) for each feature — sampled from normal distribution per tick
 _DEMO_BASELINE_PARAMS = {
-    # (mean, std) for each feature — sampled from normal distribution per tick
-    "cpu_usage":               (22, 3),
-    "memory_usage":            (45, 2),
-    "disk_usage":              (31, 1),
-    "network_bytes_sent":      (1200, 80),
-    "network_bytes_recv":      (3400, 200),
-    "active_connections":      (4, 1),
-    "process_count":           (88, 2),
-    "load_avg_1m":             (0.20, 0.03),
-    "load_avg_5m":             (0.18, 0.02),
-    "load_avg_15m":            (0.15, 0.02),
-    "failed_logins_1h":        (0, 0.5),
-    "new_processes_1h":        (1.2, 0.5),
-    "suspicious_connections":  (0, 0.2),
-    "privilege_escalations":   (0, 0.1),
-    "temporal_rhythm_deviation": (0, 0.05),
-    "causal_chain_novelty":    (0, 0.05),
-    "concealment_signal":      (0, 0),
+    "session_duration":         (420, 120),    # ~7 min session, std 2 min
+    "commands_per_minute":      (3.5, 1.2),    # 3-4 commands/min — human typing pace
+    "inter_cmd_timing_std":     (18, 8),       # 18s std between commands — human pauses
+    "session_idle_ratio":       (0.55, 0.12),  # 55% idle — human sessions have pauses
+    "unique_commands":          (12, 4),       # ~12 distinct commands per session
+    "command_entropy":          (2.8, 0.4),    # moderate entropy — not too uniform
+    "shell_history_delta":      (3, 1.5),      # 3 admin commands (vim, systemctl, etc.)
+    "sensitive_path_access":    (0, 0.1),      # rarely accesses sensitive paths
+    "hardware_enum_count":      (0, 0.3),      # legitimate users don't run uname/free loops
+    "outbound_connections":     (1, 0.5),      # 1 active outbound (the SSH session itself)
+    "persistence_attempt":      (0, 0),        # no crontab in normal sessions
+    "malware_exec_pattern":     (0, 0.2),      # no wget/nc/mknod in normal admin
+    "process_spawn_count":      (0, 0.3),      # rarely spawns bash/sh directly
+    "network_device_shell":     (0, 0),        # no router exploitation commands
+    "data_volume_proxy":        (1, 0.5),      # mirrors outbound_connections
+    "time_sin_hour":            (0.5, 0.4),    # business hours (approx)
+    "time_cos_hour":            (0.7, 0.3),
+    "time_sin_dow":             (0.4, 0.4),    # weekday (approx)
+    "time_cos_dow":             (0.8, 0.3),
 }
 
 # Attack scenario: defines which features get multiplied by what factor.
-# Factors are relative to baseline mean — not absolute numbers.
-# A factor of 10 on failed_logins means 10× baseline mean → detectable
 _DEMO_ATTACK_SCENARIOS = {
-    # Scenario: SSH brute-force + concealment + exfiltration
     "ssh_intrusion": {
-        "description": "SSH brute-force with concealment and data exfiltration",
+        "description": "Post-auth attacker with valid credentials (T1078) — hardware recon + malware download",
         "drift_factors": {
-            # Drift phase: early warning signals visible to TAARA but below anomaly threshold
-            "cpu_usage": 1.5,
-            "memory_usage": 1.3,
-            "failed_logins_1h": 15,
-            "suspicious_connections": 5,
-            "new_processes_1h": 3,
-            "temporal_rhythm_deviation": 8,
-            "load_avg_1m": 2.5,
-            "network_bytes_sent": 2,
+            # Drift: attacker starts carefully — slightly higher command rate, some recon
+            "commands_per_minute": 3.5,
+            "hardware_enum_count": 8,
+            "unique_commands": 1.8,
+            "inter_cmd_timing_std": 0.2,   # scripted = near-zero std
+            "session_idle_ratio": 0.05,    # no idle — script runs continuously
         },
         "anomaly_factors": {
-            # Full attack: broad correlated spike across all feature groups.
-            # Angle encoding detects the joint rotation pattern — amplitude encoding
-            # compresses this into a slightly larger ||Δ||.
-            "cpu_usage": 4.5,
-            "memory_usage": 2.2,
-            "disk_usage": 1.9,
-            "network_bytes_sent": 42,
-            "network_bytes_recv": 20,
-            "active_connections": 12,
-            "process_count": 2.5,
-            "load_avg_1m": 25,
-            "load_avg_5m": 26,
-            "load_avg_15m": 27,
-            "failed_logins_1h": 130,
-            "new_processes_1h": 28,
-            "suspicious_connections": 55,
-            "privilege_escalations": 4,
-            "temporal_rhythm_deviation": 60,
-            "causal_chain_novelty": 40,
-            "concealment_signal": 1,  # boolean — 0 → 1
+            # Full attack: hardware enum burst, malware download, persistence, outbound C2
+            "commands_per_minute": 18,
+            "inter_cmd_timing_std": 0.05,  # scripted — near-zero gaps
+            "session_idle_ratio": 0.02,
+            "unique_commands": 2.5,
+            "command_entropy": 1.4,
+            "hardware_enum_count": 25,
+            "sensitive_path_access": 1,    # boolean
+            "persistence_attempt": 4,
+            "malware_exec_pattern": 8,     # wget + chmod + nohup + busybox
+            "process_spawn_count": 5,
+            "outbound_connections": 12,
+            "data_volume_proxy": 14,
+            "network_device_shell": 3,     # IoT/router exploitation
         },
     }
 }
@@ -2079,8 +2067,8 @@ def _generate_demo_timeline(scenario_name: str = "ssh_intrusion", n_normal: int 
                 val = base * factor
             elif label == "anomaly":
                 factor = scenario["anomaly_factors"].get(fname, 1.0)
-                # concealment_signal is binary — cap at 1
-                if fname == "concealment_signal":
+                # binary features — cap at 1
+                if fname in ("sensitive_path_access",):
                     val = 1.0 if factor >= 1 else 0.0
                 else:
                     val = base * factor
@@ -2109,71 +2097,67 @@ def _build_demo_ssh_findings(anomaly_features: Dict) -> List[Dict]:
     """
     findings = []
 
-    failed = anomaly_features.get("failed_logins_1h", 0)
-    baseline_failed = _DEMO_BASELINE_PARAMS["failed_logins_1h"][0]
-    if failed > 20:
+    malware = anomaly_features.get("malware_exec_pattern", 0)
+    if malware >= 2:
         findings.append({
             "severity": "critical",
-            "title": f"SSH brute-force attack detected ({int(failed)} failed logins in 1 hour)",
+            "title": f"Malware download pattern detected ({int(malware)} wget/curl/nc/chmod calls)",
             "description": (
-                f"failed_logins_1h={int(failed)} — {failed/max(baseline_failed,1):.0f}× above baseline. "
-                "Consistent with automated credential-stuffing or distributed SSH brute-force."
+                f"malware_exec_pattern={int(malware)} — attacker ran wget/curl/chmod/nohup/busybox. "
+                "Consistent with post-auth malware dropper: download → chmod +x → execute in /tmp."
             ),
-            "detail": f"Threshold exceeded: >50 failed logins. Detected {int(failed)}.",
-            "remediation": "fail2ban-client set sshd banip <attacking_IP>; "
-                           "configure MaxAuthTries 3 in sshd_config; consider port-knocking.",
+            "detail": f"hardware_enum_count={anomaly_features.get('hardware_enum_count',0):.0f} "
+                      f"(recon before drop), outbound_connections={anomaly_features.get('outbound_connections',0):.0f}.",
+            "remediation": "find /tmp /var/tmp -type f -executable 2>/dev/null; "
+                           "ss -tunap | grep ESTABLISHED; "
+                           "kill any unknown processes; block outbound to unknown IPs.",
         })
 
-    concealment = anomaly_features.get("concealment_signal", 0)
-    if concealment >= 1.0:
+    persist = anomaly_features.get("persistence_attempt", 0)
+    if persist >= 1:
         findings.append({
             "severity": "critical",
-            "title": "Concealment signal active — process hiding behaviour detected",
+            "title": f"Persistence attempt — crontab modified ({int(persist)} calls)",
             "description": (
-                "concealment_signal=1.0. TAARA's causal-chain anomaly detector found processes "
-                "absent from standard enumeration but present in /proc traversal. "
-                "Consistent with rootkit, LD_PRELOAD hook, or kernel module hiding."
+                f"persistence_attempt={int(persist)}. "
+                "Attacker ran crontab to schedule recurring malware execution. "
+                "TAARA's per-identity basis flagged: legitimate user never runs crontab."
             ),
-            "detail": (
-                f"causal_chain_novelty={anomaly_features.get('causal_chain_novelty', 0):.2f}, "
-                f"proc_root_ratio elevated."
-            ),
-            "remediation": "ps auxf; ls /proc | diff with running pids; "
-                           "check lsmod for unusual kernel modules; "
-                           "chkrootkit / rkhunter scan recommended.",
+            "detail": "crontab -l to inspect; check /var/spool/cron/crontabs/root.",
+            "remediation": "crontab -r to remove; audit /etc/cron* for unknown entries; "
+                           "check /etc/rc.local and systemd timer units.",
         })
 
-    net_sent = anomaly_features.get("network_bytes_sent", 0)
-    net_baseline = _DEMO_BASELINE_PARAMS["network_bytes_sent"][0]
-    if net_sent > net_baseline * 10:
+    outbound = anomaly_features.get("outbound_connections", 0)
+    baseline_out = _DEMO_BASELINE_PARAMS["outbound_connections"][0]
+    if outbound > baseline_out * 6:
         findings.append({
             "severity": "high",
-            "title": f"Anomalous outbound traffic — possible data exfiltration",
+            "title": f"C2 beaconing — {int(outbound)} outbound connections (baseline: {baseline_out:.0f})",
             "description": (
-                f"network_bytes_sent={net_sent:.0f} — {net_sent/net_baseline:.0f}× above baseline "
-                f"({net_baseline:.0f}). Sustained elevated outbound traffic is consistent "
-                "with data exfiltration or C2 beaconing."
+                f"outbound_connections={int(outbound)} — {outbound/max(baseline_out,1):.0f}× above baseline. "
+                "Attacker established multiple connections: likely C2 channel and data exfiltration."
             ),
-            "detail": f"temporal_rhythm_deviation={anomaly_features.get('temporal_rhythm_deviation',0):.2f}",
+            "detail": f"data_volume_proxy={anomaly_features.get('data_volume_proxy',0):.0f}.",
             "remediation": "tcpdump -i eth0 -w /tmp/taara_capture.pcap; "
-                           "inspect destination IPs with ss -tunap; "
+                           "ss -tunap | grep ESTABLISHED; "
                            "block unknown outbound IPs via iptables.",
         })
 
-    privesc = anomaly_features.get("privilege_escalations", 0)
-    if privesc >= 1:
+    hw_enum = anomaly_features.get("hardware_enum_count", 0)
+    if hw_enum >= 5:
         findings.append({
             "severity": "high",
-            "title": f"Privilege escalation events detected ({int(privesc)} in monitoring window)",
+            "title": f"Hardware enumeration burst — {int(hw_enum)} recon commands",
             "description": (
-                f"privilege_escalations={int(privesc)}. "
-                f"new_processes_1h={int(anomaly_features.get('new_processes_1h',0))}. "
-                "Attacker may have obtained elevated privileges."
+                f"hardware_enum_count={int(hw_enum)}. "
+                "Attacker ran uname/free/lscpu/lspci/top to profile the machine before payload delivery. "
+                "TAARA's transformer-validated feature: >9M σ gap between normal and attack sessions."
             ),
-            "detail": "Cross-feature correlation: failed_logins → new_processes → privilege_escalations "
-                      "is a known intrusion chain. Angle encoding detected this joint pattern.",
-            "remediation": "journalctl -u sudo; grep -i 'su\\|sudo\\|root' /var/log/auth.log; "
-                           "check /etc/sudoers and ~/.ssh/authorized_keys for new entries.",
+            "detail": "commands_per_minute=" + str(round(anomaly_features.get("commands_per_minute", 0), 1))
+                      + " (scripted: near-zero inter-command timing std).",
+            "remediation": "Audit ~/.bash_history for full command sequence; "
+                           "check process table for running payloads.",
         })
 
     return findings
@@ -2477,23 +2461,25 @@ def demo_is_active():
 def demo_trigger_anomaly(f_min: float = 0.23, scenario: str = "ssh_intrusion"):
     """Instantly fire an anomaly alert — for pitch demos without a full scan."""
     features = {
-        "failed_logins_1h": 47.0,
-        "new_processes_1h": 23.0,
-        "suspicious_connections": 8.0,
-        "privilege_escalations": 3.0,
-        "cpu_usage": 94.2,
-        "memory_usage": 87.1,
-        "active_connections": 142.0,
-        "network_bytes_sent": 8492031.0,
-        "network_bytes_recv": 1204312.0,
-        "process_count": 312.0,
-        "load_avg_1m": 12.4,
-        "load_avg_5m": 9.8,
-        "load_avg_15m": 6.3,
-        "disk_usage": 71.4,
-        "temporal_rhythm_deviation": 0.91,
-        "causal_chain_novelty": 0.88,
-        "concealment_signal": 0.76,
+        "session_duration": 312.0,
+        "commands_per_minute": 22.4,
+        "inter_cmd_timing_std": 0.8,
+        "session_idle_ratio": 0.02,
+        "unique_commands": 31.0,
+        "command_entropy": 3.9,
+        "shell_history_delta": 2.0,
+        "sensitive_path_access": 1.0,
+        "hardware_enum_count": 18.0,
+        "outbound_connections": 14.0,
+        "persistence_attempt": 3.0,
+        "malware_exec_pattern": 9.0,
+        "process_spawn_count": 5.0,
+        "network_device_shell": 4.0,
+        "data_volume_proxy": 16.0,
+        "time_sin_hour": 0.47,
+        "time_cos_hour": 0.88,
+        "time_sin_dow": 0.43,
+        "time_cos_dow": 0.90,
     }
     divergence_pct = round((1 - f_min) * 100, 1)
     bucket = "critical_divergence" if f_min < 0.3 else "unsafe_direction"
@@ -2531,29 +2517,30 @@ def demo_trigger_test_alert():
     taara_analyzer = _state.get("taara_analyzer")
     embedder = _state.get("embedder")
 
-    # T1078-like feature vector: elevated fail rate, shifted timing, higher entropy
+    # T1078-like feature vector: attacker with valid creds but behavioral mismatch
+    # Scripted behavior: near-zero inter-cmd std, hardware recon burst, malware download
     features = {
-        "cpu_usage": 34.2, "memory_usage": 52.1, "disk_usage": 41.0,
-        "proc_spawn_rate": 6.8, "proc_root_ratio": 0.18, "proc_cmd_entropy": 5.2,
-        "net_outbound_conn_rate": 18.0, "net_unique_dst_ips": 7, "net_unique_dst_ports": 14,
-        "net_port_entropy": 3.1, "net_failed_conn_ratio": 0.28,
-        "failed_logins_1h": 12.0, "new_processes_1h": 9.0,
-        "suspicious_connections": 4.0, "privilege_escalations": 1.0,
-        "temporal_rhythm_deviation": 0.74, "causal_chain_novelty": 0.61,
-        "concealment_signal": 0.42, "anomaly_score": 0.0,
+        "session_duration": 185.0,
+        "commands_per_minute": 19.2,
+        "inter_cmd_timing_std": 0.6,
+        "session_idle_ratio": 0.03,
+        "unique_commands": 24.0,
+        "command_entropy": 3.7,
+        "shell_history_delta": 1.0,
+        "sensitive_path_access": 1.0,
+        "hardware_enum_count": 14.0,
+        "outbound_connections": 8.0,
+        "persistence_attempt": 2.0,
+        "malware_exec_pattern": 6.0,
+        "process_spawn_count": 3.0,
+        "network_device_shell": 2.0,
+        "data_volume_proxy": 10.0,
+        "time_sin_hour": 0.47,
+        "time_cos_hour": 0.88,
+        "time_sin_dow": 0.43,
+        "time_cos_dow": 0.90,
     }
-
-    FEATURE_NAMES = [
-        "cpu_usage", "memory_usage", "disk_usage",
-        "proc_spawn_rate", "proc_root_ratio", "proc_cmd_entropy",
-        "net_outbound_conn_rate", "net_unique_dst_ips", "net_unique_dst_ports",
-        "net_port_entropy", "net_failed_conn_ratio",
-        "failed_logins_1h", "new_processes_1h",
-        "suspicious_connections", "privilege_escalations",
-        "temporal_rhythm_deviation", "causal_chain_novelty",
-        "concealment_signal", "anomaly_score",
-    ]
-    fv = np.array([float(features.get(k, 0.0)) for k in FEATURE_NAMES], dtype=np.float32)
+    fv = np.array([float(features.get(k, 0.0)) for k in FEATURE_NAMES_19], dtype=np.float32)
 
     # Run through real quantum pipeline
     qr = {}
@@ -2800,6 +2787,45 @@ def node_identity():
         "action_count": len(action_log),
     }
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# IDENTITIES — all monitored identities with per-identity quantum state
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/identities")
+def list_identities():
+    """Return all tracked identities with their basis size, quantum state, and threshold."""
+    analyzer = _state.get("taara_analyzer")
+    if not analyzer or not analyzer.memory_bases:
+        return {"identities": []}
+    out = []
+    for iid, basis in analyzer.memory_bases.items():
+        qs  = analyzer._quantum_state.get(iid, {})
+        qc_val   = qs.get("last_quantum_confidence")
+        threshold = qs.get("threshold", 0.1854)
+        anomalous = (qc_val is not None and qc_val > threshold)
+        swap_s    = qs.get("last_swap_fidelity")
+        q_dir     = qs.get("last_q_directionality")
+        coh       = qs.get("last_phase_coherence")
+        weights   = qs.get("weights", [0.263, 0.285, 0.451])
+        basis_size = len(basis.basis_vectors)
+        out.append({
+            "identity_id":   iid,
+            "display_name":  iid.replace("taaraware_", "").replace("_", " "),
+            "basis_size":    basis_size,
+            "basis_mature":  basis_size >= 3,
+            "threshold":     round(threshold, 4),
+            "quantum_confidence": round(qc_val, 4) if qc_val is not None else None,
+            "swap_fidelity":      round(swap_s, 4)  if swap_s is not None else None,
+            "q_directionality":   round(q_dir, 4)   if q_dir is not None else None,
+            "phase_coherence":    round(coh, 4)      if coh is not None else None,
+            "weights":       [round(w, 3) for w in weights],
+            "anomalous":     anomalous,
+            "prior_anomalies": getattr(basis, "anomaly_count", 0),
+        })
+    # Sort: anomalous first, then by basis_size desc
+    out.sort(key=lambda x: (-int(x["anomalous"]), -x["basis_size"]))
+    return {"identities": out}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PQC INFO

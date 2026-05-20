@@ -95,7 +95,8 @@ from datetime import datetime
 from collections import defaultdict
 from pathlib import Path
 
-TAARAWARE_DIR = Path("/opt/taaraware")
+_opt = Path("/opt/taaraware")
+TAARAWARE_DIR = _opt if _opt.exists() else Path.home() / "taaraware"
 CONFIG_FILE = TAARAWARE_DIR / "config.json"
 DATA_DIR = TAARAWARE_DIR / "data"
 LOG_FILE = TAARAWARE_DIR / "taaraware.log"
@@ -114,10 +115,7 @@ logger = logging.getLogger(\'taaraware\')
 DEFAULT_CONFIG = {
     "command_center_host": "",
     "command_center_port": 9977,
-    "collection_interval": 600,
-    "alert_threshold_cpu": 90,
-    "alert_threshold_memory": 90,
-    "alert_threshold_disk": 95,
+    "collection_interval": 30,
     "max_buffer_size": 1000,
     "heartbeat_interval": 60,
     "version": "2.1.0"
@@ -462,20 +460,9 @@ def parse_etime(etime):
 
 
 def check_local_alerts(features, config):
-    alerts = []
-    if features.get("cpu_usage", 0) > config.get("alert_threshold_cpu", 90):
-        alerts.append({"type": "cpu_high", "severity": "high",
-                       "message": f"CPU usage at {features[\'cpu_usage\']}%",
-                       "timestamp": time.time()})
-    if features.get("memory_usage", 0) > config.get("alert_threshold_memory", 90):
-        alerts.append({"type": "memory_high", "severity": "high",
-                       "message": f"Memory usage at {features[\'memory_usage\']}%",
-                       "timestamp": time.time()})
-    if features.get("disk_usage", 0) > config.get("alert_threshold_disk", 95):
-        alerts.append({"type": "disk_high", "severity": "critical",
-                       "message": f"Disk usage at {features[\'disk_usage\']}%",
-                       "timestamp": time.time()})
-    return alerts
+    # Alert decisions are made by TAARA's quantum pipeline on the server — not here.
+    # Agent only collects and buffers features.
+    return []
 
 
 def send_to_command_center(data, config):
@@ -615,10 +602,7 @@ class TaaraWareManager:
             agent_config = {
                 "command_center_host": config.get('command_center_host', '') if config else '',
                 "command_center_port": config.get('command_center_port', 9977) if config else 9977,
-                "collection_interval": config.get('interval', 600) if config else 600,
-                "alert_threshold_cpu": 90,
-                "alert_threshold_memory": 90,
-                "alert_threshold_disk": 95,
+                "collection_interval": config.get('interval', 30) if config else 30,
                 "max_buffer_size": 1000,
                 "heartbeat_interval": 60,
                 "version": "2.1.0"

@@ -17,10 +17,34 @@ metrics collection, and cost data collection.
 import json
 import time
 import os
+import hashlib
 from typing import Dict, List, Optional, Tuple, Any
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 import numpy as np
+
+
+_KEYS_PATH = os.path.join("models", "client_keys.json")
+
+
+def _load_key_store() -> dict:
+    try:
+        with open(_KEYS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_key_store(store: dict):
+    os.makedirs("models", exist_ok=True)
+    with open(_KEYS_PATH, "w") as f:
+        json.dump(store, f, indent=2)
+
+
+def _host_key_fingerprint(host_key) -> str:
+    """SHA-256 fingerprint of a paramiko host key."""
+    raw = host_key.asbytes()
+    return hashlib.sha256(raw).hexdigest()
 
 
 class PlatformBase(ABC):
@@ -80,27 +104,95 @@ class SSHPlatform(PlatformBase):
     def __init__(self, config: Dict):
         super().__init__('ssh', config)
         self.client = None
+        self.capabilities: Dict[str, bool] = {}  # populated after connect
 
     def connect(self) -> bool:
+        import paramiko
+        host = self.config['host']
+        store = _load_key_store()
+        pinned = store.get(host, {}).get("ssh_host_key_fingerprint")
+
+        # Always use AutoAddPolicy — TAARA does its own fingerprint check after connect.
+        # RejectPolicy would block hosts not in the system known_hosts file, which breaks
+        # connections even when we have the fingerprint pinned in our own key store.
         try:
-            import paramiko
             self.client = paramiko.SSHClient()
             self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+            # key_path/key_file are both accepted for backwards compat
+            key_file = self.config.get('key_path') or self.config.get('key_file') or None
+            # Expand ~ so paths like ~/.ssh/id_rsa work
+            if key_file:
+                import os as _os
+                key_file = _os.path.expanduser(key_file)
             self.client.connect(
-                self.config['host'],
+                host,
                 port=self.config.get('port', 22),
                 username=self.config['username'],
-                password=self.config.get('password'),
-                key_filename=self.config.get('key_file'),
-                timeout=15
+                password=self.config.get('password') or None,
+                key_filename=key_file,
+                look_for_keys=not bool(self.config.get('password')),
+                allow_agent=not bool(self.config.get('password')),
+                timeout=15,
             )
+
+            # Verify or pin fingerprint
+            transport = self.client.get_transport()
+            if transport:
+                remote_key = transport.get_remote_server_key()
+                actual_fp = _host_key_fingerprint(remote_key)
+                if pinned and actual_fp != pinned:
+                    self.client.close()
+                    self.last_error = (
+                        f"HOST KEY MISMATCH for {host}: expected {pinned[:16]}… "
+                        f"got {actual_fp[:16]}… — possible MITM, connection refused."
+                    )
+                    self.connected = False
+                    return False
+                if not pinned:
+                    store.setdefault(host, {})["ssh_host_key_fingerprint"] = actual_fp
+                    store[host]["key_type"] = remote_key.get_name()
+                    store[host]["first_pinned"] = time.time()
+                    _save_key_store(store)
+                    print(f"[TAARA] Host key pinned for {host}: {actual_fp[:16]}…")
+
             self.connected = True
             self.connection_time = time.time()
+            self._probe_capabilities()
             return True
+
+        except paramiko.SSHException as e:
+            self.last_error = str(e)
+            self.connected = False
+            return False
         except Exception as e:
             self.last_error = str(e)
             self.connected = False
             return False
+
+    def _probe_capabilities(self):
+        """Run 9 fast commands to build self.capabilities — bandit uses this to filter actions."""
+        probes = {
+            "fail2ban":  "which fail2ban-client",
+            "iptables":  "which iptables",
+            "ufw":       "which ufw",
+            "tc":        "which tc",
+            "systemctl": "which systemctl",
+            "pkill":     "which pkill",
+            "ss":        "ss -tn 2>/dev/null && echo OK || echo NOSOCKET",
+            "docker":    "which docker",
+            "sudo":      "sudo -n true 2>/dev/null && echo OK || echo NOSUDO",
+        }
+        caps = {}
+        for name, cmd in probes.items():
+            try:
+                out, _, code = self.execute_command(cmd)
+                caps[name] = (code == 0 and out.strip() not in ("", "NOSOCKET", "NOSUDO"))
+            except Exception:
+                caps[name] = False
+        self.capabilities = caps
+        print(f"[TAARA] Capabilities for {self.config['host']}: "
+              + ", ".join(k for k, v in caps.items() if v))
 
     def disconnect(self):
         if self.client:

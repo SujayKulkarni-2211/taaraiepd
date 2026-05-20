@@ -79,6 +79,7 @@ export const api = {
   rollbackAction:  (logId, execute) => call(`/api/action-log/rollback/${logId}?execute=${execute ? 'true' : 'false'}`, 'POST'),
   setAutonomy:     (level)    => call(`/api/actions/autonomy-level/${level}`, 'POST'),
   agentStats:      ()         => call('/api/agent/stats'),
+  listIdentities:  ()         => call('/api/identities'),
   runAutonomous:   ()         => call('/api/actions/autonomous', 'POST'),
   // Demo mode
   triggerAnomaly:  (fmin)     => call(`/api/demo/trigger-anomaly?f_min=${fmin || 0.23}`, 'POST'),
