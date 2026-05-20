@@ -1,0 +1,111 @@
+{
+  "timestamp": "2026-05-20 20:36:16",
+  "benchmark": "TAARA v8 \u2014 all command-active Cowrie + 6 model fixes",
+  "version": "8.0",
+  "datasets": {
+    "normal": "elastic_auth.log (1032 sessions) + SSH.log legit (119 sessions)",
+    "attack": "Cowrie Zenodo 3687527 \u2014 1163 command-active sessions (all available)"
+  },
+  "features": {
+    "count": 19,
+    "grounding": "transformer attention head analysis (fixed hook extraction)",
+    "bottleneck": "8-dim (3-qubit NISQ: 2^3=8 amplitudes)",
+    "pca_8_dims": "97.1% variance on normal sessions",
+    "attention_discovered": [
+      "hardware_enum_count",
+      "persistence_attempt",
+      "network_device_shell"
+    ]
+  },
+  "per_identity": {
+    "n_identities": 20,
+    "ready": 18,
+    "primary_uid_for_attackers": "root"
+  },
+  "signal_separation": {
+    "conf_normal_mean": 0.3138,
+    "conf_normal_p95": 0.6561,
+    "conf_attack_mean": 0.6171,
+    "conf_attack_p5": 0.5655,
+    "gap": 0.3032
+  },
+  "results": {
+    "TAARA_v8": {
+      "method": "TAARA_v8",
+      "tp": 1127,
+      "fp": 33,
+      "tn": 321,
+      "fn": 36,
+      "tpr": 0.969,
+      "fpr": 0.0932,
+      "precision": 0.9716,
+      "f1": 0.9703,
+      "auc": 0.9333
+    },
+    "IF_global": {
+      "method": "IF_global",
+      "tp": 1163,
+      "fp": 50,
+      "tn": 304,
+      "fn": 0,
+      "tpr": 1.0,
+      "fpr": 0.1412,
+      "precision": 0.9588,
+      "f1": 0.979,
+      "auc": 0.9906
+    },
+    "IF_per_identity": {
+      "method": "IF_per_identity",
+      "tp": 1163,
+      "fp": 220,
+      "tn": 134,
+      "fn": 0,
+      "tpr": 1.0,
+      "fpr": 0.6215,
+      "precision": 0.8409,
+      "f1": 0.9136,
+      "auc": 0.9928
+    },
+    "LOF_per_identity": {
+      "method": "LOF_per_identity",
+      "tp": 1163,
+      "fp": 351,
+      "tn": 3,
+      "fn": 0,
+      "tpr": 1.0,
+      "fpr": 0.9915,
+      "precision": 0.7682,
+      "f1": 0.8689,
+      "auc": 0.0085
+    },
+    "PerUser_ZScore": {
+      "method": "PerUser_ZScore",
+      "tp": 0,
+      "fp": 14,
+      "tn": 340,
+      "fn": 1163,
+      "tpr": 0.0,
+      "fpr": 0.0395,
+      "precision": 0.0,
+      "f1": 0.0,
+      "auc": 0.0
+    },
+    "LSTM_AE": {
+      "method": "LSTM_AE",
+      "tp": 1159,
+      "fp": 70,
+      "tn": 284,
+      "fn": 4,
+      "tpr": 0.9966,
+      "fpr": 0.1977,
+      "precision": 0.943,
+      "f1": 0.9691,
+      "auc": 0.9926
+    }
+  },
+  "hard_case_analysis": {
+    "attacks_within_2sigma": 0,
+    "total_attacks": 1163
+  },
+  "runtime_seconds": 71.5
+}

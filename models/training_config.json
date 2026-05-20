@@ -2,8 +2,8 @@
   "status": "completed",
   "mode": "quick_demo",
   "mode_name": "Quick Training",
-  "start_time": 1779138949.4619548,
-  "samples_collected": 12,
+  "start_time": 1779306132.4742181,
+  "samples_collected": 10,
   "expected_samples": 12,
   "current_phase": "Training complete!",
   "progress": 100.0,
@@ -12,8 +12,8 @@
   "embedder_trained": true,
   "anomaly_detector_trained": true,
   "taara_trained": true,
-  "baseline_samples": 12,
-  "last_training_time": 1779139016.4637954,
+  "baseline_samples": 10,
+  "last_training_time": 1779306202.4765213,
   "training_history": [
     {
       "timestamp": 1770801909.080951,
@@ -60,6 +60,66 @@
       "timestamp": 1779139016.463798,
       "mode": "quick_demo",
       "samples": 12
+    },
+    {
+      "timestamp": 1779190459.7750375,
+      "mode": "quick_demo",
+      "samples": 12
+    },
+    {
+      "timestamp": 1779214671.827491,
+      "mode": "quick_demo",
+      "samples": 12
+    },
+    {
+      "timestamp": 1779294690.5775201,
+      "mode": "quick_demo",
+      "samples": 59
+    },
+    {
+      "timestamp": 1779299704.4496698,
+      "mode": "quick_demo",
+      "samples": 12
+    },
+    {
+      "timestamp": 1779299990.4744332,
+      "mode": "quick_demo",
+      "samples": 12
+    },
+    {
+      "timestamp": 1779301066.2244687,
+      "mode": "quick_demo",
+      "samples": 12
+    },
+    {
+      "timestamp": 1779301585.8001564,
+      "mode": "quick_demo",
+      "samples": 12
+    },
+    {
+      "timestamp": 1779302350.192863,
+      "mode": "quick_demo",
+      "samples": 12
+    },
+    {
+      "timestamp": 1779304464.4722316,
+      "mode": "quick_demo",
+      "samples": 9
+    },
+    {
+      "timestamp": 1779304742.3703275,
+      "mode": "quick_demo",
+      "samples": 10
+    },
+    {
+      "timestamp": 1779305064.2526608,
+      "mode": "quick_demo",
+      "samples": 9
+    },
+    {
+      "timestamp": 1779306202.4765227,
+      "mode": "quick_demo",
+      "samples": 10
     }
   ],
   "duration_minutes": 1,

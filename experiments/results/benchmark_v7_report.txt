@@ -1,0 +1,29 @@
+TAARA Benchmark v7 Report — T1078 Simulation + AUC-Primary
+============================================================
+Normal: 1151 sessions (1032 elastic + 119 ssh_legit)
+Attack (overt):  228 Cowrie command-active sessions
+Attack (T1078):  228 simulated (Cowrie cmds in normal user slots)
+Features: 19-dim, grounded in transformer attention output
+  Attention-discovered: hardware_enum_count, persistence_attempt, network_device_shell
+PCA: 8 dims explain 97.1% variance (bottleneck = 3-qubit NISQ)
+
+SCENARIO A — Overt attackers (Cowrie honeypot bots, easy to detect)
+Method                        AUC  TPR@10FPR     F1
+--------------------------------------------------
+TAARA_v7                   0.7779      0.329  0.401
+IF_global                  0.9914      1.000  0.901
+IF_per_identity            0.9988      1.000  0.675
+LOF_per_identity           0.0085      1.000  0.565
+PerUser_ZScore             0.0000      0.000  0.000
+LSTM_AE                    0.9944      1.000  0.899
+
+SCENARIO B — T1078 simulation (attacker with valid credentials, TAARA's claim)
+Method                        AUC  TPR@10FPR     F1
+--------------------------------------------------
+TAARA_v7                   0.8548      0.684  0.684
+IF_global                  0.9909      1.000  0.901
+IF_per_identity            0.5881      0.719  0.536
+LOF_per_identity           0.9408      0.996  0.563
+PerUser_ZScore             1.0000      1.000  0.934
+LSTM_AE                    0.9943      1.000  0.905
+Runtime: 82s

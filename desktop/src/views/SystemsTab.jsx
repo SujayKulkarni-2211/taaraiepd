@@ -1920,6 +1920,9 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
   const pollRef                   = useRef(null);
   const [revoking, setRevoking]   = useState(false);
   const [showMapping, setShowMapping] = useState(false);
+  const [twInfo, setTwInfo]       = useState(null);
+  const [updating, setUpdating]   = useState(false);
+  const [updateDone, setUpdateDone] = useState(false);
 
   async function load() {
     try {
@@ -1933,8 +1936,23 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
   useEffect(() => {
     load();
     pollRef.current = setInterval(load, 10000);
+    api.taarawareInfo().then(r => { if (r.ok) setTwInfo(r.data); }).catch(() => {});
     return () => clearInterval(pollRef.current);
   }, []);
+
+  async function updateAgent() {
+    setUpdating(true); setUpdateDone(false);
+    try {
+      const r = await api.taarawareUpdate();
+      if (r.ok) {
+        setUpdateDone(true);
+        setTwInfo(prev => prev ? { ...prev, update_available: false, deployed_version: prev.current_version } : prev);
+      } else {
+        alert('Update failed: ' + (r.data?.detail || 'unknown error'));
+      }
+    } catch (e) { alert('Update failed: ' + e.message); }
+    finally { setUpdating(false); }
+  }
 
   async function revoke() {
     if (!window.confirm('Revoke TaaraWare and remove agent from the server?')) return;
@@ -2218,6 +2236,25 @@ function TaaraWareStatusPanel({ hostname, demoMode, onRevoke }) {
             )}
           </>
         )}
+      </div>
+
+      <div className="card" style={{ marginBottom: 16, border: `1px solid ${updateDone ? 'rgba(34,204,102,0.3)' : 'rgba(74,158,255,0.3)'}` }}>
+        <div className="section-title" style={{ marginBottom: 8, color: updateDone ? 'var(--green)' : 'var(--blue)' }}>
+          {updateDone ? '✓ Agent Updated' : '↑ Update TaaraWare'}
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 12 }}>
+          {twInfo
+            ? <>Deployed: <span style={{ fontFamily: 'monospace', color: twInfo.update_available ? 'var(--amber)' : 'var(--green)' }}>v{twInfo.deployed_version}</span>
+              {'  ·  '}Current: <span style={{ fontFamily: 'monospace', color: 'var(--green)' }}>v{twInfo.current_version}</span>
+              {twInfo.update_available && <span style={{ marginLeft: 8, color: 'var(--amber)' }}>— update available</span>}
+              {!twInfo.update_available && !updateDone && <span style={{ marginLeft: 8, color: 'var(--text-faint)' }}>— up to date</span>}
+            </>
+            : 'Redeploys the latest agent version without revoking the PQC keypair.'
+          }
+        </div>
+        <button className="btn btn-primary" onClick={updateAgent} disabled={updating} style={{ fontSize: 12 }}>
+          {updating ? <><span className="spinner" /> Updating…</> : '↑ Redeploy / Update'}
+        </button>
       </div>
 
       <div className="card" style={{ border: '1px solid rgba(233,69,96,0.2)' }}>
@@ -2848,7 +2885,7 @@ function AgentSubTab() {
     api.proposedActions().then(r => { if (r.ok) setProposed(r.data.actions || r.data || []); }).catch(() => {});
     api.banditSummary().then(r => { if (r.ok) setBanditStats(r.data); }).catch(() => {});
     api.banditRecommend(null, null).then(r => { if (r.ok) setBanditRecs(r.data.recommendations || []); }).catch(() => {});
-    api.auditTrail(20).then(r => { if (r.ok) setAuditLog(r.data.actions || r.data || []); }).catch(() => {});
+    api.auditTrail(20).then(r => { if (r.ok) setAuditLog(r.data.trail || r.data.actions || []); }).catch(() => {});
     api.agentStats().then(r => { if (r.ok) setLearningMode(r.data.learning_mode ?? false); }).catch(() => {});
   }, []);
 

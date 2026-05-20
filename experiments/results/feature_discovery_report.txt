@@ -1,0 +1,25 @@
+TAARA Transformer Feature Discovery Report
+==================================================
+Dataset: elastic_auth.log + SSH.log (normal), Cowrie Zenodo 3687527 (attack)
+Normal sessions: 1386
+Attack sessions: 1000
+
+Key Finding:
+  Transformer-discovered features (128-dim CLS embedding)
+  need 5 PCA components to explain 92% variance.
+  This confirms our TARGET_DIMS=19 choice.
+  Variance at 19 dims: 99.81%
+
+Separation (attack vs normal in transformer space):
+  Ratio: 1.838x  (IsolationForest AUC: 0.9642)
+
+Component interpretations (what each PCA dimension represents):
+  PC 1 (41.1%): ['CMD_ATTACK_RM', 'EVT_SESSION_OPEN', 'CMD_ADMIN_CAT', 'ANTIFORENSICS_CLEANUP', 'CMD_OTHER_CRONTAB']
+  PC 2 (21.7%): ['CMD_OTHER_W', 'CMD_ADMIN_ECHO', '<CLS>', 'CMD_ADMIN_SERVICE', 'TIME_MORNING']
+  PC 3 (14.5%): ['CMD_ATTACK_UNAME', 'TIME_NIGHT', 'DUR_MEDIUM', 'CMD_ADMIN_VIM', 'COWRIE_LOGIN_FAIL']
+  PC 4 (10.8%): ['AUTH_PUBKEY', 'CMD_ADMIN_LS', 'TIME_AFTERNOON', 'CMD_ATTACK_UNAME', 'TIME_EVENING']
+  PC 5 (5.8%): ['CMD_OTHER_/BIN/BUSYBOX', 'IP_PUBLIC', 'TIME_MORNING', 'EVT_SESSION_OPEN', 'IP_LOOPBACK']
+
+Top discriminative attention heads:
+
+Runtime: 169.6s

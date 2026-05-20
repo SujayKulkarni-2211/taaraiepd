@@ -61,6 +61,12 @@ benchmark/datasets/*.tar.gz
 
 # Runtime model state
 models/taaraware_state.json
+# Per-identity quantum states (contains host-specific private data)
+models/nodes/
+# SSH key store (contains shared secrets and host fingerprints)
+models/client_keys.json
+# Generated PDF reports
+models/*.pdf
 
 # Desktop app — exclude node_modules and build artifacts
 desktop/node_modules/

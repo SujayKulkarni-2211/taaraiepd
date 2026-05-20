@@ -176,7 +176,7 @@ class TrainingManager:
                         platform.config.get('password', '')
                     )
                     ssh_mgr.connect()
-                    collector = collector_class(ssh_mgr)
+                    collector = collector_class(ssh_mgr, host=platform.config.get('host', ''))
 
                 start = time.time()
                 sample_count = 0

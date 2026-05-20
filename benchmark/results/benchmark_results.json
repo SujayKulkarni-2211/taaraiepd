@@ -1,10 +1,46 @@
 {
-  "dataset": "LogHub SSH (Zenodo DOI: 10.5281/zenodo.8196385)",
-  "honest_caveat": "Qualifying IPs found: 2, but after requiring both normal and test phases of \u22655 events each, no usable windows remain. The SSH dataset IPs with normal phases tend to have very few events. This is a dataset coverage limitation, not a TAARA limitation.",
-  "qualifying_ips": 2,
-  "usable_normal_windows": 0,
-  "usable_attack_windows": 0,
-  "taara_per_identity": null,
-  "isolation_forest": null,
-  "status": "insufficient_data"
+  "dataset": "LogHub_SSH_655k",
+  "dataset_url": "https://zenodo.org/record/8196385",
+  "threat": "T1078_Valid_Accounts",
+  "mitre": "T1078.003 Local Accounts",
+  "attack_simulation": "Within global \u00b12\u03c3 statistical range (classical threshold evasion)",
+  "timestamp": "2026-05-20 01:11:46",
+  "runtime_seconds": 1473.1,
+  "results": {
+    "IsolationForest": {
+      "method": "IsolationForest",
+      "tp": 1,
+      "fp": 0,
+      "tn": 35,
+      "fn": 14,
+      "tpr": 0.0667,
+      "fpr": 0.0,
+      "precision": 1.0,
+      "f1": 0.125,
+      "total_attacks": 15,
+      "total_normal": 35
+    },
+    "TAARA_V3": {
+      "method": "TAARA_V3",
+      "tp": 0,
+      "fp": 0,
+      "tn": 35,
+      "fn": 15,
+      "tpr": 0.0,
+      "fpr": 0.0,
+      "precision": 0.0,
+      "f1": 0.0,
+      "total_attacks": 15,
+      "total_normal": 35
+    }
+  },
+  "summary": {
+    "taara_tpr": 0.0,
+    "if_tpr": 0.0667,
+    "taara_fpr": 0.0,
+    "if_fpr": 0.0,
+    "taara_f1": 0.0,
+    "if_f1": 0.125,
+    "tpr_improvement": -0.0667
+  }
 }

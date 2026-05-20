@@ -208,36 +208,52 @@ function StatusView({ hostname, demoMode }) {
 
   async function load() {
     try {
-      const [sr, sys] = await Promise.all([api.taarawareStatus(), api.status()]);
-      if (sr.ok) setStatus(sr.data);
-      if (sys.ok && sys.data.novelty?.f_min != null) {
-        setHistory(h => [...h.slice(-19), { t: new Date().toLocaleTimeString(), f: sys.data.novelty.f_min }]);
+      const r = await api.taarawareStatus();
+      if (r.ok) {
+        setStatus(r.data);
+        const fmin = r.data?.novelty?.f_min;
+        if (fmin != null) setHistory(h => [...h.slice(-19), { t: new Date().toLocaleTimeString(), f: fmin }]);
       }
     } catch (_) {}
   }
 
   useEffect(() => {
     load();
-    pollRef.current = setInterval(load, 30000);
+    pollRef.current = setInterval(load, 10000);
     return () => clearInterval(pollRef.current);
   }, []);
 
-  const fv   = status?.feature_vector || {};
-  const fmin = status?.novelty?.f_min ?? status?.f_min;
-  const col  = fminColor(fmin);
-  const lastTs = status?.last_collection
-    ? new Date(status.last_collection * 1000).toLocaleString()
+  const nov    = status?.novelty || {};
+  const agSt   = status?.agent_status || {};
+  const fv     = status?.feature_vector || {};
+  const fmin   = nov.f_min ?? null;
+  const col    = fminColor(fmin);
+  const qc     = nov.quantum_confidence ?? null;
+  const sf     = nov.swap_fidelity ?? null;
+  const dir    = nov.q_directionality ?? null;
+  const pc     = nov.phase_coherence ?? null;
+  const thresh = nov.threshold ?? 0.4382;
+  const bufSz  = agSt.buffer_size;
+  const qcColor = qc == null ? 'var(--text-faint)' : qc >= 0.75 ? '#e94560' : qc >= 0.45 ? '#f5a623' : qc > thresh ? '#4a9eff' : '#22cc66';
+  const recentLog = agSt.recent_logs ? agSt.recent_logs.split('\n').filter(Boolean).pop() : '';
+  const lastTs = recentLog
+    ? recentLog.split(' INFO:')[0].replace(/.*\[TaaraWare\]\s*/, '').trim().split(' ').slice(0,2).join(' ')
     : demoMode ? 'Demo — live' : 'Waiting…';
 
   return (
     <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 14, marginBottom: 20 }}>
-        <StatTile label="Agent" value={status ? 'LIVE' : demoMode ? 'DEMO' : 'CHECKING'}
-          color={status || demoMode ? 'var(--green)' : 'var(--text-faint)'} />
-        <StatTile label="F_min" value={fmin != null ? fmin.toFixed(4) : '—'} color={col} mono />
-        <StatTile label="Novelty"
-          value={status?.novelty?.quantum_novelty != null ? status.novelty.quantum_novelty.toFixed(1) + '%' : '—'}
-          color={col} mono />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(155px, 1fr))', gap: 10, marginBottom: 20 }}>
+        <StatTile label="Agent"
+          value={agSt.status === 'active' ? 'LIVE' : demoMode ? 'DEMO' : (status ? 'CONNECTED' : 'CHECKING')}
+          color={agSt.status === 'active' || demoMode ? 'var(--green)' : 'var(--text-faint)'} />
+        <StatTile label="Buffer" value={bufSz != null ? `${bufSz}` : '—'} color="var(--blue)" sub="samples stored" />
+        <StatTile label="Q Confidence" value={qc != null ? qc.toFixed(4) : '—'} color={qcColor} mono />
+        <StatTile label="SWAP Fidelity" value={sf != null ? sf.toFixed(4) : '—'}
+          color={sf == null ? 'var(--text-faint)' : sf >= 0.7 ? '#22cc66' : sf >= 0.5 ? '#4a9eff' : '#e94560'} mono />
+        <StatTile label="Directionality" value={dir != null ? dir.toFixed(4) : '—'}
+          color={dir == null ? 'var(--text-faint)' : dir >= 0.3 ? '#e94560' : dir >= 0.15 ? '#f5a623' : '#22cc66'} mono />
+        <StatTile label="Phase Coherence" value={pc != null ? pc.toFixed(4) : '—'}
+          color={pc == null ? 'var(--text-faint)' : pc >= 0.8 ? '#22cc66' : pc >= 0.6 ? '#4a9eff' : '#e94560'} mono />
         <StatTile label="Last Collection" value={lastTs} color="var(--text-dim)" small />
       </div>
 
@@ -256,12 +272,14 @@ function StatusView({ hostname, demoMode }) {
           <div className="section-title" style={{ marginBottom: 12 }}>Live Feature Signals</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
             {[
-              { key: 'cpu_usage',           label: 'CPU Usage',           unit: '%' },
-              { key: 'memory_usage',         label: 'Memory Usage',        unit: '%' },
-              { key: 'failed_logins',        label: 'Failed Logins',       unit: '' },
-              { key: 'temporal_rhythm_dev',  label: 'Temporal Rhythm Dev', unit: '' },
-              { key: 'causal_chain_novelty', label: 'Causal Chain Novelty',unit: '' },
-              { key: 'concealment_signal',   label: 'Concealment Signal',  unit: '' },
+              { key: 'commands_per_minute',  label: 'Cmds / Min',          unit: '/m' },
+              { key: 'hardware_enum_count',  label: 'HW Enum Count ★',     unit: '' },
+              { key: 'malware_exec_pattern', label: 'Malware Pattern ★',   unit: '' },
+              { key: 'persistence_attempt',  label: 'Persistence Attempt ★',unit: '' },
+              { key: 'outbound_connections', label: 'Outbound Conns',      unit: '' },
+              { key: 'sensitive_path_access',label: 'Sensitive Access',    unit: '' },
+              { key: 'session_duration',     label: 'Session Duration',    unit: 's' },
+              { key: 'unique_commands',      label: 'Unique Commands',     unit: '' },
             ].filter(({ key }) => fv[key] != null).map(({ key, label, unit }) => (
               <div key={key} style={{ background: 'var(--bg-raised)', borderRadius: 6, padding: '10px 12px' }}>
                 <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4 }}>{label}</div>

@@ -1,0 +1,23 @@
+TAARA T1078 Benchmark Report
+============================
+Dataset:   LogHub SSH (655,146 lines, Zenodo 8196385)
+Threat:    MITRE ATT&CK T1078 Valid Account Compromise
+Test:      Attacks injected WITHIN global ±2σ statistical range
+           (the exact scenario where classical threshold detectors fail)
+
+Results
+-------
+                     TPR        FPR     Precision        F1
+IsolationForest    0.067      0.000       1.000      0.125
+TAARA V3           0.000      0.000       0.000      0.000
+
+TPR improvement over IsolationForest: -0.067
+FPR change:                           +0.000
+
+Attack counts:
+  TAARA detected:  0 / 15
+  IF detected:     1 / 15
+  TAARA false alarms: 0 / 35
+  IF false alarms:    0 / 35
+
+Runtime: 1473.1s

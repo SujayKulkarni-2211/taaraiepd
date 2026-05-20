@@ -1712,27 +1712,29 @@ def taaraware_update():
 @app.get("/api/taaraware/info")
 def taaraware_info():
     taaraware_mgr = _state["taaraware_mgr"]
-    return taaraware_mgr.get_deployment_info() if taaraware_mgr else {}
+    if not taaraware_mgr:
+        return {}
+    platform = _state.get("platform")
+    host = platform.config.get("host") if platform and hasattr(platform, "config") else None
+    return taaraware_mgr.get_deployment_info(host=host)
 
 
 @app.get("/api/taaraware/status")
 def taaraware_status():
-    analyzer = _state["taara_analyzer"]
     agent    = _state["security_agent"]
-    novelty  = {}
-    fv       = {}
-    if analyzer:
-        try:
-            fv = analyzer.get_latest_feature_vector() if hasattr(analyzer, "get_latest_feature_vector") else {}
-            novelty = analyzer.get_latest_novelty() if hasattr(analyzer, "get_latest_novelty") else {}
-        except Exception:
-            pass
+    # Pull from the live status cache — same source the main dashboard uses
+    cached   = _state.get("_status_cache") or {}
+    fv       = cached.get("feature_vector") or {}
+    novelty  = cached.get("novelty") or {}
+    agent_st = cached.get("agent_status") or {}
     return {
         "running": True,
         "feature_vector": fv,
         "latest_f_min": novelty.get("f_min"),
+        "novelty": novelty,
+        "agent_status": agent_st,
         "latest_bucket": novelty.get("bucket"),
-        "memory_size": novelty.get("memory_size"),
+        "memory_size": novelty.get("basis_size"),
         "anomaly_count": _state.get("anomaly_count", 0),
         "autonomy_level": agent.bandit.autonomy_level if agent and hasattr(agent, "bandit") else 0.5,
     }
@@ -1886,7 +1888,7 @@ def get_bandit_summary():
 
 
 @app.get("/api/actions/bandit-recommend")
-def bandit_recommend(f_min: Optional[str] = None, platform_type: str = None, top_k: int = 5):
+def bandit_recommend(f_min: Optional[str] = None, platform_type: Optional[str] = None, top_k: int = 5):
     """
     Return bandit-ranked action recommendations for the current or specified quantum context.
     If f_min is not provided, uses the current active alert's f_min.
@@ -1968,8 +1970,10 @@ def set_autonomy_level(level: int):
 def get_agent_stats():
     agent = _state["security_agent"]
     if not agent:
-        return {}
-    return agent.get_stats()
+        return {"learning_mode": False}
+    stats = agent.get_stats()
+    stats.setdefault("learning_mode", getattr(agent, "learning_mode", False))
+    return stats
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

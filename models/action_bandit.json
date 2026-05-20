@@ -1,22 +1,2579 @@
 {
   "arm_stats": {
-    "normal:ssh:firewall_rule": {
+    "unsafe_direction:ssh:block_ip": {
+      "n_proposed": 9,
+      "n_approved": 8,
+      "n_executed": 8,
+      "n_success": 7,
+      "n_rolled_back": 0,
+      "total_reward": 11.5
+    },
+    "unsafe_direction:ssh:rate_limit_ssh": {
+      "n_proposed": 6,
+      "n_approved": 4,
+      "n_executed": 4,
+      "n_success": 3,
+      "n_rolled_back": 1,
+      "total_reward": 3.5
+    },
+    "unsafe_direction:ssh:isolate_user": {
+      "n_proposed": 4,
+      "n_approved": 2,
+      "n_executed": 2,
+      "n_success": 1,
+      "n_rolled_back": 0,
+      "total_reward": 2.0
+    },
+    "critical_divergence:ssh:block_ip": {
+      "n_proposed": 5,
+      "n_approved": 5,
+      "n_executed": 5,
+      "n_success": 5,
+      "n_rolled_back": 0,
+      "total_reward": 7.5
+    },
+    "critical_divergence:ssh:isolate_user": {
       "n_proposed": 3,
-      "n_approved": 0,
-      "n_executed": 0,
+      "n_approved": 3,
+      "n_executed": 3,
+      "n_success": 2,
+      "n_rolled_back": 0,
+      "total_reward": 3.5
+    },
+    "drifting:ssh:rate_limit_ssh": {
+      "n_proposed": 5,
+      "n_approved": 4,
+      "n_executed": 4,
+      "n_success": 4,
+      "n_rolled_back": 0,
+      "total_reward": 6.0
+    },
+    "drifting:ssh:harden_ssh": {
+      "n_proposed": 3,
+      "n_approved": 2,
+      "n_executed": 2,
+      "n_success": 2,
+      "n_rolled_back": 0,
+      "total_reward": 3.0
+    },
+    "normal:ssh:block_ip": {
+      "n_proposed": 1,
+      "n_approved": 1,
+      "n_executed": 1,
       "n_success": 0,
       "n_rolled_back": 0,
       "total_reward": 0.0
     },
     "normal:ssh:generic": {
-      "n_proposed": 2,
-      "n_approved": 0,
-      "n_executed": 0,
-      "n_success": 0,
+      "n_proposed": 101,
+      "n_approved": 101,
+      "n_executed": 101,
+      "n_success": 66,
       "n_rolled_back": 0,
-      "total_reward": 0.0
+      "total_reward": 99.0
     }
   },
-  "contrast_pairs": [],
+  "contrast_pairs": [
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305377.3554037
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305386.085692
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305395.7364736
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305448.6047535
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305523.0202332
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305523.3682516
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305523.6089513
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305523.8698652
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305524.1032345
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305524.3461814
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305524.5965648
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305524.8152876
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305525.0539663
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305525.300895
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305554.063277
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305554.346707
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305554.655776
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305562.4407904
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305570.407806
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305577.9779706
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305593.5033028
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305603.9774165
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305604.26855
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305611.427216
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305633.9727795
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305634.4123073
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305634.7165117
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305635.0864232
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305635.405919
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305635.7285447
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305636.0314457
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305636.3267796
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305636.6570876
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305636.9593418
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305637.3281186
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305637.6592815
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305637.9330902
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305638.2505198
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305638.6094904
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305638.9354675
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305639.3002942
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305639.613399
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305639.8804717
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305640.1478727
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305656.7389977
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305657.1323602
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305657.5432596
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305672.5532227
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305672.8494706
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305673.132048
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305692.1126108
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305701.586564
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305701.9760494
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305714.7028766
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305715.081104
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305715.3605125
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305715.6286838
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305715.9772377
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305716.2520573
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305716.5041876
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305716.946512
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305717.3032749
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305735.888569
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305736.2004774
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305736.5305805
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305739.060538
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305742.2955146
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305742.5418165
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305814.9201932
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305815.2725143
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305815.6788204
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305815.9466057
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305816.2174857
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305816.5035064
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305816.765539
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305817.1467583
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305817.4564273
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305822.004981
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305822.2821019
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305832.4937832
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305832.7553222
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305833.0097659
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305843.4861095
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305843.7485988
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305848.9306626
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305849.2098725
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305863.5971148
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305863.9606118
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305874.713152
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305875.035204
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305901.2105534
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305926.959385
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779305930.1716554
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779306639.1378877
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779306844.6134593
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779306845.0204437
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779306845.4366338
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779306845.745424
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": true,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779306856.6986175
+    },
+    {
+      "arm_key": "normal:ssh:generic",
+      "success": false,
+      "context": {
+        "f_min": 1.0,
+        "quantum_confidence": null,
+        "swap_fidelity": null,
+        "q_directionality": null,
+        "phase_coherence": null,
+        "host": "mail.possibleclients.com",
+        "platform_type": "ssh",
+        "capabilities": {
+          "fail2ban": true,
+          "iptables": true,
+          "ufw": false,
+          "tc": false,
+          "systemctl": true,
+          "pkill": true,
+          "ss": true,
+          "docker": true,
+          "sudo": true
+        }
+      },
+      "timestamp": 1779306856.9494157
+    }
+  ],
   "autonomy_level": 1
 }

@@ -108,9 +108,9 @@ IS_MACOS = _platform.system() == "Darwin"
 logging.basicConfig(
     filename=str(LOG_FILE),
     level=logging.INFO,
-    format=\'%(asctime)s [TaaraWare] %(levelname)s: %(message)s\'
+    format="%(asctime)s [TaaraWare] %(levelname)s: %(message)s"
 )
-logger = logging.getLogger(\'taaraware\')
+logger = logging.getLogger("taaraware")
 
 DEFAULT_CONFIG = {
     "command_center_host": "",
@@ -118,7 +118,7 @@ DEFAULT_CONFIG = {
     "collection_interval": 30,
     "max_buffer_size": 1000,
     "heartbeat_interval": 60,
-    "version": "2.1.0"
+    "version": "2.2.0"
 }
 
 running = True
@@ -140,328 +140,175 @@ def run_cmd(cmd, timeout=10):
         return ""
 
 
-def compute_entropy(items):
-    if not items:
-        return 0.0
-    freq = defaultdict(int)
-    for item in items:
-        freq[str(item)] += 1
-    total = len(items)
-    entropy = 0.0
-    for count in freq.values():
-        p = count / total
-        if p > 0:
-            entropy -= p * math.log2(p)
-    return entropy
+# ── 19-feature DNA collector (matches TAARA v8 benchmark exactly) ─────────────
+
+HW_ENUM   = {"uname", "free", "top", "w", "lscpu", "lspci", "df", "uptime", "nproc"}
+PERSIST   = {"crontab"}
+MALWARE   = {"wget", "curl", "tftp", "nc", "netcat", "chmod", "nohup", "tar", "busybox", "dd", "mknod"}
+NETDEV    = {"version", "shell", "enable", "terminal", "configure"}
+ADMIN     = {"apt-get", "apt", "vim", "nano", "systemctl", "service", "sudo", "su",
+             "scp", "git", "pip", "docker"}
+SPAWN_CMDS = {"dd", "busybox", "sh", "bash", "perl", "python", "python3"}
+SENSITIVE_PATHS = {".ssh", "authorized_keys", "/etc/passwd", "/etc/shadow",
+                   "id_rsa", "/root", ".bash_history"}
+
+FEATURE_NAMES = [
+    "session_duration", "commands_per_minute", "inter_cmd_timing_std",
+    "session_idle_ratio", "unique_commands", "command_entropy",
+    "shell_history_delta", "sensitive_path_access", "hardware_enum_count",
+    "outbound_connections", "persistence_attempt", "malware_exec_pattern",
+    "process_spawn_count", "network_device_shell", "data_volume_proxy",
+    "time_sin_hour", "time_cos_hour", "time_sin_dow", "time_cos_dow",
+]
+
+# State persisted across collection cycles
+_state = {
+    "session_start": time.time(),
+    "baseline_history": None,   # history lines at agent start
+    "cmd_log": [],              # [(timestamp, cmd), ...]
+    "last_collection_time": time.time(),
+    "last_history_len": 0,      # track growth without re-reading full file
+}
+
+HISTORY_POLL_INTERVAL = 3  # seconds — poll history this often inside each 30s window
 
 
-def collect_cpu_usage():
-    if IS_MACOS:
-        # top -l 1 on macOS: "CPU usage: 5.55% user, 9.72% sys, 84.72% idle"
-        out = run_cmd("top -l 1 -n 0 | grep -i \'cpu usage\'")
-        try:
-            # sum user + sys
-            import re
-            nums = re.findall(r\'([\\d.]+)%\', out)
-            if len(nums) >= 2:
-                return float(nums[0]) + float(nums[1])
-        except Exception:
-            pass
-        return 0.0
-    else:
-        out = run_cmd("top -bn1 | grep \'Cpu(s)\' | awk \'{print $2}\'")
-        try:
-            return float(out)
-        except ValueError:
-            return 0.0
+def _read_bash_history():
+    for candidate in [Path.home() / ".bash_history", Path("/root/.bash_history")]:
+        if candidate.exists():
+            try:
+                return candidate.read_text(errors="replace").strip().splitlines()
+            except Exception:
+                pass
+    return []
 
 
-def collect_memory_usage():
-    if IS_MACOS:
-        # vm_stat output: pages free, active, inactive, wired
-        out = run_cmd("vm_stat")
-        try:
-            page_size = 4096
-            pages = {}
-            for line in out.split("\\n"):
-                for key in ("Pages free", "Pages active", "Pages inactive", "Pages wired down", "Pages occupied by compressor"):
-                    if line.startswith(key):
-                        val = line.split(":")[1].strip().rstrip(".")
-                        pages[key] = int(val)
-            total = sum(pages.values())
-            used = total - pages.get("Pages free", 0)
-            return round(used / max(total, 1) * 100, 1)
-        except Exception:
-            return 0.0
-    else:
-        out = run_cmd("free | grep Mem | awk \'{printf \\"%.1f\\", $3/$2 * 100.0}\'")
-        try:
-            return float(out)
-        except ValueError:
-            return 0.0
+def _sync_history():
+    lines = _read_bash_history()
+    if _state["baseline_history"] is None:
+        _state["baseline_history"] = lines
+        _state["last_history_len"] = len(lines)
+        return
+    prev_len = _state["last_history_len"]
+    if len(lines) > prev_len:
+        new_cmds = lines[prev_len:]
+        now = time.time()
+        for cmd in new_cmds:
+            _state["cmd_log"].append((now, cmd.strip()))
+        _state["last_history_len"] = len(lines)
+        _state["cmd_log"] = _state["cmd_log"][-500:]
 
 
-def collect_network_connections():
-    """Returns (outbound_count, dst_ips set, dst_ports set, failed_count)."""
-    dst_ips = set()
-    dst_ports = set()
-    outbound = 0
-    failed = 0
+def _count_outbound():
+    try:
+        out = run_cmd('ss -tn state established 2>/dev/null | grep -v "127.0.0.1" | wc -l')
+        return max(int(out) - 1, 0)  # subtract own SSH session
+    except Exception:
+        return 0
 
-    if IS_MACOS:
-        out = run_cmd("netstat -an 2>/dev/null")
-        for line in out.split("\\n"):
-            parts = line.split()
-            if len(parts) < 5:
-                continue
-            proto = parts[0]
-            if proto not in ("tcp", "tcp4", "tcp6"):
-                continue
-            state = parts[5] if len(parts) > 5 else ""
-            if "LISTEN" in state:
-                continue
-            foreign = parts[4] if len(parts) > 4 else ""
-            if foreign in ("*.*", ""):
-                continue
-            # macOS format: ip.port (dots, last segment is port)
-            segs = foreign.rsplit(".", 1)
-            if len(segs) == 2:
-                dst_ips.add(segs[0])
-                try:
-                    dst_ports.add(int(segs[1]))
-                except ValueError:
-                    pass
-            outbound += 1
-            if any(x in state.upper() for x in ["TIME_WAIT", "CLOSE_WAIT", "FIN_WAIT"]):
-                failed += 1
-    else:
-        out = run_cmd("ss -tunap 2>/dev/null")
-        for line in out.split("\\n")[1:]:
-            parts = line.split()
-            if len(parts) < 5:
-                continue
-            if "LISTEN" in line:
-                continue
-            remote = parts[4] if len(parts) > 4 else ""
-            if ":" in remote:
-                ip_port = remote.rsplit(":", 1)
-                dst_ips.add(ip_port[0])
-                try:
-                    dst_ports.add(int(ip_port[1]))
-                except ValueError:
-                    pass
-            outbound += 1
-            if any(x in line.upper() for x in ["TIME-WAIT", "CLOSE-WAIT", "FIN-WAIT"]):
-                failed += 1
 
-    return outbound, dst_ips, dst_ports, failed
+def _probe_sensitive():
+    for path in [".ssh/", "authorized_keys", "/etc/shadow", "id_rsa"]:
+        out = run_cmd(f'find $HOME /etc -name "*" -newer /tmp -path "*{path}*" 2>/dev/null | head -1')
+        if out.strip():
+            return True
+    return False
 
 
 def collect_features():
-    features = {}
+    # _sync_history already called by the polling loop
+    now = time.time()
+    # Use only commands seen since the last collection — sliding window
+    window_start = _state["last_collection_time"]
+    window_cmds = [(t, c) for t, c in _state["cmd_log"] if t >= window_start]
+    dur = max(now - window_start, 0.01)
+    cmds = [c for _, c in window_cmds]
+    ctimes = [t for t, _ in window_cmds]
+    cmd_names = [c.split()[0] for c in cmds if c.split()]
+    n = max(len(cmd_names), 1)
 
-    # Process behavior — ps -eo works on both Linux and macOS
-    ps_out = run_cmd("ps -eo pid,ppid,uid,etime,comm")
-    processes = []
-    for line in ps_out.split("\\n"):
-        parts = line.split()
-        if len(parts) >= 5:
-            try:
-                processes.append({
-                    "pid": int(parts[0]), "ppid": int(parts[1]),
-                    "uid": int(parts[2]), "etime": parts[3],
-                    "comm": " ".join(parts[4:])
-                })
-            except ValueError:
-                continue
+    # 0 session_duration — seconds of activity in this collection window
+    f0 = min(dur, 86400.0)
 
-    short_lived = sum(1 for p in processes if parse_etime(p["etime"]) < 60)
-    very_short = sum(1 for p in processes if parse_etime(p["etime"]) < 5)
-    features["proc_spawn_rate"] = float(short_lived)
-    features["proc_short_lived_ratio"] = very_short / max(len(processes), 1)
-    features["proc_uid_diversity"] = float(len(set(p["uid"] for p in processes)))
-    features["proc_root_ratio"] = sum(1 for p in processes if p["uid"] == 0) / max(len(processes), 1)
-    features["proc_cmd_entropy"] = compute_entropy([p["comm"] for p in processes])
+    # 1 commands_per_minute
+    f1 = min(n / (dur / 60 + 1e-6), 500.0)
 
-    # Network behavior
-    outbound, dst_ips, dst_ports, failed = collect_network_connections()
-    features["net_outbound_conn_rate"] = float(outbound)
-    features["net_unique_dst_ips"] = float(len(dst_ips))
-    features["net_unique_dst_ports"] = float(len(dst_ports))
-    features["net_port_entropy"] = compute_entropy(list(dst_ports))
-    features["net_failed_conn_ratio"] = failed / max(outbound, 1)
+    # 2 inter_cmd_timing_std
+    if len(ctimes) > 1:
+        gaps = [max(ctimes[i+1] - ctimes[i], 0) for i in range(len(ctimes) - 1)]
+        import statistics
+        f2 = min(statistics.stdev(gaps) if len(gaps) > 1 else 0.0, 7200.0)
+    else:
+        f2 = 0.0
 
-    # System metrics
-    features["cpu_usage"] = collect_cpu_usage()
-    features["memory_usage"] = collect_memory_usage()
+    # 3 session_idle_ratio
+    if len(ctimes) > 1:
+        active = ctimes[-1] - ctimes[0]
+        f3 = max(1.0 - active / dur, 0.0)
+    else:
+        f3 = 1.0
 
-    disk_out = run_cmd("df / | tail -1 | awk \'{print $5}\' | tr -d \'%\'")
-    try:
-        features["disk_usage"] = float(disk_out)
-    except ValueError:
-        features["disk_usage"] = 0.0
+    # 4 unique_commands
+    f4 = float(len(set(cmd_names)))
 
-    features["timestamp"] = time.time()
-    features["hostname"] = socket.gethostname()
+    # 5 command_entropy
+    from collections import Counter
+    cnt = Counter(cmd_names)
+    f5 = -sum((c / n) * math.log2(c / n + 1e-9) for c in cnt.values()) if cmd_names else 0.0
 
-    _add_hidden_features(features)
+    # 6 shell_history_delta (admin command count)
+    f6 = float(sum(1 for c in cmd_names if c in ADMIN))
 
-    return features
+    # 7 sensitive_path_access
+    sensitive = any(any(p in cmd for p in SENSITIVE_PATHS) for cmd in cmds)
+    if not sensitive:
+        sensitive = _probe_sensitive()
+    f7 = float(int(sensitive))
 
+    # 8 hardware_enum_count
+    f8 = float(sum(1 for c in cmd_names if c in HW_ENUM))
 
-def _add_hidden_features(features):
-    """Add 3 hidden behavioral signals. Feed into model only — not displayed in UI."""
+    # 9 outbound_connections
+    f9 = float(_count_outbound())
 
-    # 1. temporal_rhythm_deviation
-    try:
-        temporal_val = 0.0
-        if FEATURE_BUFFER.exists():
-            with open(FEATURE_BUFFER) as f:
-                buf = json.load(f)
-            recent = buf[-100:] if len(buf) >= 100 else buf
-            if len(recent) >= 50:
-                hour_counts = defaultdict(int)
-                for entry in recent:
-                    ts = entry.get("timestamp", 0)
-                    hour_counts[datetime.fromtimestamp(ts).hour] += 1
-                current_hour = datetime.now().hour
-                current_hour_pct = hour_counts.get(current_hour, 0) / len(recent)
-                temporal_val = 1.0 if current_hour_pct < 0.05 else 0.0
-        features["temporal_rhythm_deviation"] = temporal_val
-    except Exception:
-        features["temporal_rhythm_deviation"] = 0.0
+    # 10 persistence_attempt
+    f10 = float(sum(1 for c in cmd_names if c in PERSIST))
 
-    # 2. causal_chain_novelty
-    try:
-        ps_out = run_cmd("ps -eo ppid,pid,comm")
-        current_pairs = set()
-        for line in ps_out.split("\\n"):
-            parts = line.split()
-            if len(parts) >= 3:
-                try:
-                    pair_hash = hashlib.md5(f"{parts[0]}:{parts[2]}".encode()).hexdigest()
-                    current_pairs.add(pair_hash)
-                except Exception:
-                    continue
+    # 11 malware_exec_pattern
+    f11 = float(sum(1 for c in cmd_names if c in MALWARE))
 
-        historical_pairs = set()
-        if FEATURE_BUFFER.exists():
-            with open(FEATURE_BUFFER) as f:
-                buf = json.load(f)
-            recent = buf[-50:] if len(buf) >= 50 else buf
-            for entry in recent:
-                for h in entry.get("_proc_pair_hashes", []):
-                    historical_pairs.add(h)
+    # 12 process_spawn_count
+    f12 = float(sum(1 for c in cmd_names if c in SPAWN_CMDS))
 
-        features["_proc_pair_hashes"] = list(current_pairs)
-        if current_pairs:
-            new_pairs = current_pairs - historical_pairs
-            features["causal_chain_novelty"] = len(new_pairs) / len(current_pairs)
-        else:
-            features["causal_chain_novelty"] = 0.0
-    except Exception:
-        features["causal_chain_novelty"] = 0.0
+    # 13 network_device_shell
+    f13 = float(sum(1 for c in cmd_names if c in NETDEV))
 
-    # 3. concealment_signal — average of 3 sub-signals
-    try:
-        sub_signals = []
+    # 14 data_volume_proxy
+    downloads = sum(1 for c in cmd_names if c in {"wget", "curl", "tftp"})
+    f14 = float(f9 + downloads)
 
-        # Sub-signal 1: auth log growth
-        try:
-            auth_val = 0.0
-            if IS_MACOS:
-                auth_log = Path("/var/log/system.log")
-            else:
-                auth_log = Path("/var/log/auth.log")
-                if not auth_log.exists():
-                    auth_log = Path("/var/log/secure")  # RHEL/CentOS
+    # 15-18 sinusoidal time
+    lt = time.localtime(now)
+    f15 = math.sin(2 * math.pi * lt.tm_hour / 24)
+    f16 = math.cos(2 * math.pi * lt.tm_hour / 24)
+    f17 = math.sin(2 * math.pi * lt.tm_wday / 7)
+    f18 = math.cos(2 * math.pi * lt.tm_wday / 7)
 
-            if auth_log.exists():
-                current_size = auth_log.stat().st_size
-                prev_size = 0
-                if FEATURE_BUFFER.exists():
-                    with open(FEATURE_BUFFER) as f:
-                        buf = json.load(f)
-                    if buf:
-                        prev_size = buf[-1].get("_auth_log_size", 0)
-                current_hour = datetime.now().hour
-                if 8 <= current_hour < 20 and current_size <= prev_size:
-                    auth_val = 1.0
-                features["_auth_log_size"] = current_size
-            sub_signals.append(auth_val)
-        except Exception:
-            sub_signals.append(0.0)
+    _state["last_collection_time"] = now
 
-        # Sub-signal 2: shell history line count decrease
-        try:
-            hist_val = 0.0
-            if IS_MACOS:
-                home = str(Path.home())
-                hist_candidates = [
-                    Path(home) / ".zsh_history",
-                    Path(home) / ".bash_history",
-                ]
-            else:
-                hist_candidates = [
-                    Path("/root/.bash_history"),
-                    Path.home() / ".bash_history",
-                ]
-
-            hist_file = next((p for p in hist_candidates if p.exists()), None)
-            if hist_file:
-                current_lines = int(run_cmd(f"wc -l < {hist_file}") or "0")
-                prev_lines = 0
-                if FEATURE_BUFFER.exists():
-                    with open(FEATURE_BUFFER) as f:
-                        buf = json.load(f)
-                    if buf:
-                        prev_lines = buf[-1].get("_bash_history_lines", 0)
-                if current_lines < prev_lines:
-                    hist_val = 1.0
-                features["_bash_history_lines"] = current_lines
-            sub_signals.append(hist_val)
-        except Exception:
-            sub_signals.append(0.0)
-
-        # Sub-signal 3: cron silence
-        try:
-            cron_val = 0.0
-            crontab_out = run_cmd("crontab -l 2>/dev/null")
-            if crontab_out:
-                if IS_MACOS:
-                    # macOS: check launchd plist mtime or just skip
-                    pass  # gracefully skip, no /var/log/cron on macOS
-                else:
-                    cron_log = Path("/var/log/cron")
-                    if cron_log.exists() and time.time() - cron_log.stat().st_mtime > 600:
-                        cron_val = 1.0
-            sub_signals.append(cron_val)
-        except Exception:
-            sub_signals.append(0.0)
-
-        features["concealment_signal"] = sum(sub_signals) / len(sub_signals) if sub_signals else 0.0
-    except Exception:
-        features["concealment_signal"] = 0.0
-
-
-def parse_etime(etime):
-    try:
-        parts = etime.replace("-", ":").split(":")
-        parts = [int(p) for p in parts]
-        if len(parts) == 2:
-            return parts[0] * 60 + parts[1]
-        elif len(parts) == 3:
-            return parts[0] * 3600 + parts[1] * 60 + parts[2]
-        elif len(parts) == 4:
-            return parts[0] * 86400 + parts[1] * 3600 + parts[2] * 60 + parts[3]
-        return 0
-    except (ValueError, IndexError):
-        return 0
+    return {
+        "session_duration": f0, "commands_per_minute": f1, "inter_cmd_timing_std": f2,
+        "session_idle_ratio": f3, "unique_commands": f4, "command_entropy": f5,
+        "shell_history_delta": f6, "sensitive_path_access": f7, "hardware_enum_count": f8,
+        "outbound_connections": f9, "persistence_attempt": f10, "malware_exec_pattern": f11,
+        "process_spawn_count": f12, "network_device_shell": f13, "data_volume_proxy": f14,
+        "time_sin_hour": f15, "time_cos_hour": f16, "time_sin_dow": f17, "time_cos_dow": f18,
+        "timestamp": now, "hostname": socket.gethostname(),
+    }
 
 
 def check_local_alerts(features, config):
-    # Alert decisions are made by TAARA's quantum pipeline on the server — not here.
-    # Agent only collects and buffers features.
+    # Alert decisions made by TAARA quantum pipeline on the server — agent only collects.
     return []
 
 
@@ -513,38 +360,37 @@ def main():
         except Exception:
             pass
 
-    logger.info(f"TaaraWare Agent v{config[\'version\']} starting on {\'macOS\' if IS_MACOS else \'Linux\'}")
-    logger.info(f"Collection interval: {config[\'collection_interval\']}s")
-    logger.info(f"Command center: {config.get(\'command_center_host\', \'not configured\')}")
+    logger.info(f"TaaraWare Agent v{config['version']} starting on {'macOS' if IS_MACOS else 'Linux'}")
+    logger.info(f"Collection interval: {config['collection_interval']}s")
+    logger.info(f"Command center: {config.get('command_center_host', 'not configured')}")
+
+    collection_interval = int(config.get("collection_interval", 30))
+    elapsed = 0
 
     while running:
+        # Poll history every 3s so commands are captured even mid-session
+        time.sleep(HISTORY_POLL_INTERVAL)
+        elapsed += HISTORY_POLL_INTERVAL
         try:
-            features = collect_features()
-            buffer_features(features)
+            _sync_history()
+        except Exception:
+            pass
 
-            alerts = check_local_alerts(features, config)
-            for alert in alerts:
-                logger.warning(f"ALERT: {alert[\'message\']}")
-
-            payload = {
-                "type": "telemetry",
-                "features": features,
-                "alerts": alerts,
-                "hostname": features.get("hostname", "unknown"),
-                "agent_version": config["version"]
-            }
-            send_to_command_center(payload, config)
-
-            logger.info(f"Collection complete. CPU: {features.get(\'cpu_usage\', 0)}%, "
-                        f"MEM: {features.get(\'memory_usage\', 0)}%")
-
-        except Exception as e:
-            logger.error(f"Collection error: {e}")
-
-        for _ in range(int(config["collection_interval"])):
-            if not running:
-                break
-            time.sleep(1)
+        if elapsed >= collection_interval:
+            elapsed = 0
+            try:
+                features = collect_features()
+                buffer_features(features)
+                send_to_command_center({
+                    "type": "telemetry", "features": features, "alerts": [],
+                    "hostname": features.get("hostname", "unknown"),
+                    "agent_version": config["version"]
+                }, config)
+                logger.info(f"Collection complete. cpm={features.get('commands_per_minute', 0):.1f} "
+                            f"entropy={features.get('command_entropy', 0):.2f} "
+                            f"sensitive={features.get('sensitive_path_access', 0):.0f}")
+            except Exception as e:
+                logger.error(f"Collection error: {e}")
 
     logger.info("TaaraWare Agent stopped")
 
@@ -554,7 +400,7 @@ if __name__ == "__main__":
 '''
 
 
-CURRENT_AGENT_VERSION = "2.1.0"
+CURRENT_AGENT_VERSION = "2.2.0"
 
 
 class TaaraWareManager:
@@ -605,13 +451,19 @@ class TaaraWareManager:
                 "collection_interval": config.get('interval', 30) if config else 30,
                 "max_buffer_size": 1000,
                 "heartbeat_interval": 60,
-                "version": "2.1.0"
+                "version": "2.2.0"
             }
 
             config_json = json.dumps(agent_config)
             platform.execute_command(f"cat > {idir}/config.json << 'CONFIGEOF'\n{config_json}\nCONFIGEOF")
             platform.execute_command(f"cat > {idir}/taaraware_agent.py << 'AGENTEOF'\n{TAARAWARE_AGENT_SCRIPT}\nAGENTEOF")
             platform.execute_command(f"chmod +x {idir}/taaraware_agent.py")
+
+            # Termux (Android) only has 'python', not 'python3'
+            py_out, _, _ = platform.execute_command(
+                "{ command -v python3 >/dev/null 2>&1 && echo python3; } || { command -v python >/dev/null 2>&1 && echo python; } || echo python3"
+            )
+            py_bin = (py_out or 'python3').strip().splitlines()[0].strip() or 'python3'
 
             if is_macos:
                 # macOS: use launchd plist in user LaunchAgents
@@ -651,7 +503,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 {idir}/taaraware_agent.py
+ExecStart={py_bin} {idir}/taaraware_agent.py
 Restart=always
 RestartSec=30
 WorkingDirectory={idir}
@@ -666,9 +518,9 @@ WantedBy=multi-user.target
                     time.sleep(2)
                     status_out, _, _ = platform.execute_command("systemctl is-active taaraware")
                 else:
-                    # No systemd (Termux/Android) — run directly in background
-                    platform.execute_command("pkill -f taaraware_agent.py 2>/dev/null || true")
-                    platform.execute_command(f"nohup python3 {idir}/taaraware_agent.py > {idir}/taaraware.log 2>&1 &")
+                    # No systemd (Termux/Android) — run directly in background with disown so it survives SSH exit
+                    platform.execute_command("kill $(pgrep -f taaraware_agent.py) 2>/dev/null || true")
+                    platform.execute_command(f"nohup {py_bin} {idir}/taaraware_agent.py > {idir}/taaraware.log 2>&1 </dev/null & disown")
                     time.sleep(2)
                     status_out, _, _ = platform.execute_command(
                         "pgrep -f taaraware_agent.py >/dev/null 2>&1 && echo active || echo inactive"
@@ -760,13 +612,17 @@ WantedBy=multi-user.target
             log_out, _, _ = platform.execute_command(
                 "tail -5 /opt/taaraware/taaraware.log 2>/dev/null || tail -5 $HOME/taaraware/taaraware.log 2>/dev/null"
             )
+            py_chk, _, _ = platform.execute_command(
+                "{ command -v python3 >/dev/null 2>&1 && echo python3; } || { command -v python >/dev/null 2>&1 && echo python; } || echo python3"
+            )
+            py_chk_bin = (py_chk or 'python3').strip().splitlines()[0].strip() or 'python3'
             buffer_out, _, _ = platform.execute_command(
-                "python3 -c \"import json,os; p=('/opt/taaraware' if os.path.exists('/opt/taaraware') else os.path.expanduser('~/taaraware'))+'/data/feature_buffer.json'; d=json.load(open(p)); print(len(d))\" 2>/dev/null"
+                f"{py_chk_bin} -c \"import json,os; p=('/opt/taaraware' if os.path.exists('/opt/taaraware') else os.path.expanduser('~/taaraware'))+'/data/feature_buffer.json'; d=json.load(open(p)); print(len(d))\" 2>/dev/null"
             )
 
             # Read deployed version from remote config.json
             ver_out, _, _ = platform.execute_command(
-                "python3 -c \"import json,os; p=('/opt/taaraware' if os.path.exists('/opt/taaraware') else os.path.expanduser('~/taaraware'))+'/config.json'; print(json.load(open(p)).get('version','unknown'))\" 2>/dev/null"
+                f"{py_chk_bin} -c \"import json,os; p=('/opt/taaraware' if os.path.exists('/opt/taaraware') else os.path.expanduser('~/taaraware'))+'/config.json'; print(json.load(open(p)).get('version','unknown'))\" 2>/dev/null"
             )
             deployed_version = ver_out.strip() or 'unknown'
             update_available = (deployed_version != CURRENT_AGENT_VERSION and deployed_version != 'unknown')
@@ -791,9 +647,14 @@ WantedBy=multi-user.target
             return []
 
         try:
-            # Use python3 to emit only the JSON — avoids MOTD banner polluting stdout
+            # Detect python binary (Termux only has 'python')
+            py_cd, _, _ = platform.execute_command(
+                "{ command -v python3 >/dev/null 2>&1 && echo python3; } || { command -v python >/dev/null 2>&1 && echo python; } || echo python3"
+            )
+            py_cd_bin = (py_cd or 'python3').strip().splitlines()[0].strip() or 'python3'
+            # Use detected binary to emit only the JSON — avoids MOTD banner polluting stdout
             out, _, _ = platform.execute_command(
-                "python3 -c \""
+                f"{py_cd_bin} -c \""
                 "import json,os,sys; "
                 "p=('/opt/taaraware' if os.path.exists('/opt/taaraware') else os.path.expanduser('~/taaraware'))+'/data/feature_buffer.json'; "
                 "d=json.load(open(p)); "
@@ -836,16 +697,22 @@ WantedBy=multi-user.target
             import time as _time
             _time.sleep(2)
 
+            # Detect python binary on remote (Termux has 'python', not 'python3')
+            py_out_upd, _, _ = platform.execute_command(
+                "{ command -v python3 >/dev/null 2>&1 && echo python3; } || { command -v python >/dev/null 2>&1 && echo python; } || echo python3"
+            )
+            py_bin_upd = (py_out_upd or 'python3').strip().splitlines()[0].strip() or 'python3'
+
             # Push updated agent script (check both paths)
             idir_upd = "$(test -d /opt/taaraware && echo /opt/taaraware || echo $HOME/taaraware)"
             platform.execute_command(f"cat > {idir_upd}/taaraware_agent.py << 'AGENTEOF'\n{TAARAWARE_AGENT_SCRIPT}\nAGENTEOF")
             platform.execute_command(f"chmod +x {idir_upd}/taaraware_agent.py")
 
-            # Update version in remote config (preserve all other settings)
+            # Update version + collection_interval in remote config
             platform.execute_command(
-                f"python3 -c \""
+                f"{py_bin_upd} -c \""
                 f"import json,os; p=('/opt/taaraware' if os.path.exists('/opt/taaraware') else os.path.expanduser('~/taaraware'))+'/config.json'; "
-                f"c=json.load(open(p)); c['version']='{CURRENT_AGENT_VERSION}'; "
+                f"c=json.load(open(p)); c['version']='{CURRENT_AGENT_VERSION}'; c['collection_interval']=30; "
                 f"json.dump(c,open(p,'w'))"
                 f"\" 2>/dev/null"
             )
@@ -856,7 +723,7 @@ WantedBy=multi-user.target
             else:
                 platform.execute_command(
                     f"systemctl start taaraware 2>/dev/null || "
-                    f"{{ pkill -f taaraware_agent.py 2>/dev/null; nohup python3 {idir_upd}/taaraware_agent.py > {idir_upd}/taaraware.log 2>&1 & }}"
+                    f"{{ kill $(pgrep -f taaraware_agent.py) 2>/dev/null; nohup {py_bin_upd} {idir_upd}/taaraware_agent.py > {idir_upd}/taaraware.log 2>&1 </dev/null & disown; }}"
                 )
 
             _time.sleep(2)
@@ -880,11 +747,23 @@ WantedBy=multi-user.target
     def get_deployed_count(self) -> int:
         return len(self.deployed_agents)
 
-    def get_deployment_info(self) -> Dict:
+    def get_deployment_info(self, host: str = None) -> Dict:
+        # Find the agent entry for the requested host (or most recently deployed)
+        agent = None
+        if host and host in self.deployed_agents:
+            agent = self.deployed_agents[host]
+        elif self.deployed_agents:
+            agent = list(self.deployed_agents.values())[-1]
+
+        deployed_version = (agent or {}).get('version', 'unknown') if agent else 'unknown'
+        update_available = deployed_version != CURRENT_AGENT_VERSION and deployed_version != 'unknown'
         return {
             'total_deployed': len(self.deployed_agents),
             'agents': self.deployed_agents,
-            'total_alerts': len(self.alerts)
+            'total_alerts': len(self.alerts),
+            'deployed_version': deployed_version,
+            'current_version': CURRENT_AGENT_VERSION,
+            'update_available': update_available,
         }
 
     def _save_state(self):

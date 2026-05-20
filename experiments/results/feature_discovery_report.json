@@ -1,0 +1,197 @@
+{
+  "timestamp": "2026-05-20 13:50:11",
+  "config": {
+    "d_model": 128,
+    "n_heads": 4,
+    "n_layers": 3,
+    "max_seq_len": 64,
+    "vocab_size": 60,
+    "train_epochs": 40,
+    "target_dims": 19
+  },
+  "discovery": {
+    "n_normal_sessions": 1386,
+    "n_attack_sessions": 1000,
+    "d_model": 128,
+    "pca_dims_for_90pct": 5,
+    "pca_dims_for_92pct": 5,
+    "pca_dims_for_95pct": 6,
+    "variance_at_target_dims": 99.81,
+    "separation_ratio": 1.838,
+    "attack_mean_z": 1.511,
+    "normal_mean_z": 0.822,
+    "if_auc_on_transformer_features": 0.9642,
+    "cumulative_variance": [
+      41.14,
+      62.82,
+      77.29,
+      88.13,
+      93.98,
+      96.02,
+      97.43,
+      98.18,
+      98.57,
+      98.85,
+      99.1,
+      99.26,
+      99.38,
+      99.5,
+      99.59,
+      99.66,
+      99.72,
+      99.76,
+      99.81,
+      99.84,
+      99.86,
+      99.88,
+      99.9,
+      99.91,
+      99.93,
+      99.94,
+      99.95,
+      99.95,
+      99.96,
+      99.97
+    ],
+    "component_interpretations": [
+      {
+        "component": 1,
+        "variance_explained_pct": 41.14,
+        "cumulative_variance_pct": 41.14,
+        "top_tokens": [
+          [
+            "CMD_ATTACK_RM",
+            2.2348408699035645
+          ],
+          [
+            "EVT_SESSION_OPEN",
+            -2.2109158039093018
+          ],
+          [
+            "CMD_ADMIN_CAT",
+            -1.8476600646972656
+          ],
+          [
+            "ANTIFORENSICS_CLEANUP",
+            -1.8083876371383667
+          ],
+          [
+            "CMD_OTHER_CRONTAB",
+            -1.6704204082489014
+          ]
+        ]
+      },
+      {
+        "component": 2,
+        "variance_explained_pct": 21.67,
+        "cumulative_variance_pct": 62.82,
+        "top_tokens": [
+          [
+            "CMD_OTHER_W",
+            2.147080659866333
+          ],
+          [
+            "CMD_ADMIN_ECHO",
+            1.7387001514434814
+          ],
+          [
+            "<CLS>",
+            -1.734285831451416
+          ],
+          [
+            "CMD_ADMIN_SERVICE",
+            -1.6452527046203613
+          ],
+          [
+            "TIME_MORNING",
+            1.6417076587677002
+          ]
+        ]
+      },
+      {
+        "component": 3,
+        "variance_explained_pct": 14.47,
+        "cumulative_variance_pct": 77.29,
+        "top_tokens": [
+          [
+            "CMD_ATTACK_UNAME",
+            -2.4247207641601562
+          ],
+          [
+            "TIME_NIGHT",
+            -1.7739566564559937
+          ],
+          [
+            "DUR_MEDIUM",
+            -1.654296636581421
+          ],
+          [
+            "CMD_ADMIN_VIM",
+            -1.5420255661010742
+          ],
+          [
+            "COWRIE_LOGIN_FAIL",
+            1.5106061697006226
+          ]
+        ]
+      },
+      {
+        "component": 4,
+        "variance_explained_pct": 10.83,
+        "cumulative_variance_pct": 88.13,
+        "top_tokens": [
+          [
+            "AUTH_PUBKEY",
+            -2.713353157043457
+          ],
+          [
+            "CMD_ADMIN_LS",
+            2.465394973754883
+          ],
+          [
+            "TIME_AFTERNOON",
+            -2.3375296592712402
+          ],
+          [
+            "CMD_ATTACK_UNAME",
+            -2.317260503768921
+          ],
+          [
+            "TIME_EVENING",
+            2.0158658027648926
+          ]
+        ]
+      },
+      {
+        "component": 5,
+        "variance_explained_pct": 5.85,
+        "cumulative_variance_pct": 93.98,
+        "top_tokens": [
+          [
+            "CMD_OTHER_/BIN/BUSYBOX",
+            -1.7822827100753784
+          ],
+          [
+            "IP_PUBLIC",
+            -1.7359062433242798
+          ],
+          [
+            "TIME_MORNING",
+            -1.7269229888916016
+          ],
+          [
+            "EVT_SESSION_OPEN",
+            1.658006191253662
+          ],
+          [
+            "IP_LOOPBACK",
+            -1.583689570426941
+          ]
+        ]
+      }
+    ]
+  },
+  "head_analysis": {
+    "top_discriminative_heads": []
+  }
+}

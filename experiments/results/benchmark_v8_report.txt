@@ -1,0 +1,27 @@
+TAARA Benchmark v5 Report
+============================================================
+Normal: 1151 sessions (1032 elastic + 119 ssh_legit)
+Attack: 1163 Cowrie sessions (Zenodo 3687527)
+Features: 19-dim, grounded in transformer attention output
+  Attention-discovered (not in prior hand-engineered list):
+    hardware_enum_count (uname+free+top+lscpu+w cluster)
+    persistence_attempt (crontab — 1087/1100 attack sessions)
+    network_device_shell (version/shell/enable — router exploitation)
+PCA: 8 dims explain 97.1% variance (bottleneck = 3-qubit NISQ)
+
+Method                       TPR    FPR   Prec     F1     AUC
+-----------------------------------------------------------------
+TAARA_v8                   0.969  0.093  0.972  0.970  0.9333
+IF_global                  1.000  0.141  0.959  0.979  0.9906
+IF_per_identity            1.000  0.622  0.841  0.914  0.9928
+LOF_per_identity           1.000  0.992  0.768  0.869  0.0085
+PerUser_ZScore             0.000  0.040  0.000  0.000  0.0000
+LSTM_AE                    0.997  0.198  0.943  0.969  0.9926
+
+Signal separation (quantum_confidence):
+  Normal mean: 0.3138  p95: 0.6561
+  Attack mean: 0.6171  p5:  0.5655
+  Gap: 0.3032
+
+Hard-case (within global ±2σ): 0/1163 sessions
+Runtime: 71s

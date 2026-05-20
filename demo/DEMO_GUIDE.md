@@ -5,6 +5,23 @@
 - Phone (target): `10.248.248.67` port `8022` user `u0_a134` pass `demo1234`
 - Laptop (attacker): `10.248.248.59`
 
+## Laptop ZeroTier Setup (run once before demo)
+```bash
+# ZeroTier is already installed. Service should be running:
+sudo systemctl status zerotier-one
+
+# Join the demo network:
+sudo zerotier-cli join 88c5b1f33907fd78
+
+# Verify connected and IP assigned:
+sudo zerotier-cli listnetworks
+# Should show: 88c5b1f33907fd78  my-first-network  OK  PRIVATE  ztpp6lmdsb  10.248.248.59/24
+
+# Verify phone is reachable:
+nc -zv 10.248.248.67 8022
+# Should show: Connection to 10.248.248.67 8022 port [tcp/*] succeeded!
+```
+
 ## Scenario 1 — Live Server Monitoring
 1. Start TAARA: `cd ~/projects/IEPD/taaraiepd && source venv/bin/activate && python server.py`
 2. Open Electron app
@@ -42,3 +59,9 @@ cd ~/projects/IEPD/taaraiepd
 - Phase 5: Network probe (port scan)
 - Phase 6: Privilege escalation probe
 - Phase 7: Cover tracks (history clear)
+
+
+attack script that was tried: 
+cd ~/projects/IEPD/taaraiepd
+chmod +x demo/zerotier_run_attack.sh
+./demo/zerotier_run_attack.sh

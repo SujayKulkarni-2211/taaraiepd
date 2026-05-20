@@ -1,0 +1,60 @@
+{
+  "benchmark": "MITRE ATT&CK T1078 \u2014 Valid Account credential theft",
+  "version": "3.0 \u2014 coherence-weighted interference fusion + per-identity learnable weights",
+  "fusion_formula": "conf = \u03b1\u00b7swap_s + \u03b2\u00b7q_dir + \u03b3\u00b7coh\u00b7\u221a(swap_s\u00b7q_dir)",
+  "global_prior": {
+    "alpha": 0.3,
+    "beta": 0.12,
+    "gamma": 0.58
+  },
+  "fit_weights": {
+    "alpha_mean": 0.2538,
+    "beta_mean": 0.2699,
+    "gamma_mean": 0.4762
+  },
+  "datasets": {
+    "pretrain_ae": "SSH.log legit + auth.log + elastic_auth.log",
+    "finetune": "Per-identity on same sources",
+    "t1078_injection": "\u00b120-40% interval shift, 1.3-1.8x jitter, +8-15% fail rate on legit user profile"
+  },
+  "results": {
+    "taara": {
+      "method": "TAARA v3 (coh-weighted interference)",
+      "precision": 0.46,
+      "recall": 0.843,
+      "f1": 0.5952,
+      "tp": 741,
+      "fp": 870,
+      "tn": 6015,
+      "fn": 138
+    },
+    "iforest_global": {
+      "method": "IsolationForest global (Splunk/Sentinel)",
+      "precision": 0.7629,
+      "recall": 0.9954,
+      "f1": 0.8638,
+      "tp": 875,
+      "fp": 272,
+      "tn": 6613,
+      "fn": 4
+    },
+    "auc_taara": 0.9497,
+    "auc_iforest": 0.9954,
+    "f1_delta": -0.2686,
+    "auc_delta": -0.0457
+  },
+  "signal_separation": {
+    "swap_normal": 0.9166,
+    "swap_attack": 0.3943,
+    "swap_gap": 0.5223,
+    "dir_normal": 0.0709,
+    "dir_attack": 0.2652,
+    "dir_gap": 0.1943,
+    "coh_normal": 0.6056,
+    "coh_attack": 0.97,
+    "coh_gap": 0.3644,
+    "conf_normal": 0.054,
+    "conf_attack": 0.4041,
+    "conf_gap": 0.3501
+  }
+}
